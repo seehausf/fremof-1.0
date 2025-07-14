@@ -299,9 +299,7 @@ class FremofExcelReader:
                         # Fester Wert
                         if i == 0:
                             flow_args['fix'] = relation if relation != 1.0 else None
-                        else:
-                            # Für weitere Outputs als conversion_factor
-                            flow_args['conversion_factors'] = relation
+                        # conversion_factors wird bei der Converter-Erstellung verwendet, nicht bei Flow
                 
                 outputs[self.buses[bus_label]] = Flow(**flow_args)
             
@@ -367,9 +365,7 @@ class FremofExcelReader:
                         # Fester Wert
                         if i == 0:
                             flow_args['fix'] = relation if relation != 1.0 else None
-                        else:
-                            # Für weitere Inputs als conversion_factor
-                            flow_args['conversion_factors'] = relation
+                        # conversion_factors wird bei der Converter-Erstellung verwendet, nicht bei Flow
                 
                 inputs[self.buses[bus_label]] = Flow(**flow_args)
             
@@ -417,16 +413,7 @@ class FremofExcelReader:
                     raise ValueError(f"Bus '{bus_label}' nicht gefunden für Converter '{row['label']}'")
                 
                 flow_args = {}
-                if i < len(input_relations):
-                    relation = input_relations[i]
-                    if isinstance(relation, str):
-                        ts_data = self._get_timeseries_data(relation)
-                        if ts_data is not None:
-                            flow_args['fix'] = ts_data
-                    else:
-                        if relation != 1.0:
-                            flow_args['conversion_factors'] = relation
-                
+                # Für Converter werden conversion_factors auf Component-Ebene gesetzt, nicht auf Flow-Ebene
                 inputs[self.buses[bus_label]] = Flow(**flow_args)
             
             # Output-Flows erstellen  
@@ -445,24 +432,41 @@ class FremofExcelReader:
                     else:
                         flow_args['nominal_capacity'] = row.get('existing', 0)
                 
-                # Output Relation
+                outputs[self.buses[bus_label]] = Flow(**flow_args)
+            
+            # Conversion factors für Converter zusammenbauen
+            conversion_factors = {}
+            
+            # Input conversion factors
+            for i, bus_label in enumerate(input_labels):
+                if i < len(input_relations):
+                    relation = input_relations[i]
+                    if isinstance(relation, str):
+                        ts_data = self._get_timeseries_data(relation)
+                        if ts_data is not None:
+                            conversion_factors[self.buses[bus_label]] = ts_data
+                    else:
+                        if relation != 1.0:
+                            conversion_factors[self.buses[bus_label]] = relation
+            
+            # Output conversion factors  
+            for i, bus_label in enumerate(output_labels):
                 if i < len(output_relations):
                     relation = output_relations[i]
                     if isinstance(relation, str):
                         ts_data = self._get_timeseries_data(relation)
                         if ts_data is not None:
-                            flow_args['fix'] = ts_data
+                            conversion_factors[self.buses[bus_label]] = ts_data
                     else:
                         if relation != 1.0:
-                            flow_args['conversion_factors'] = relation
-                
-                outputs[self.buses[bus_label]] = Flow(**flow_args)
+                            conversion_factors[self.buses[bus_label]] = relation
             
             # Converter erstellen
             converter = Converter(
                 label=row['label'],
                 inputs=inputs,
-                outputs=outputs
+                outputs=outputs,
+                conversion_factors=conversion_factors if conversion_factors else None
             )
             converters.append(converter)
         
@@ -540,7 +544,7 @@ if __name__ == "__main__":
     
     # Energiesystem aus Excel erstellen
     try:
-        energy_system = create_energy_system_from_excel('fremof_simple_example.xlsx', timeindex)
+        energy_system = create_energy_system_from_excel('fremof_example.xlsx', timeindex)
         print("Energiesystem erfolgreich erstellt!")
         
         # Optional: Modell erstellen und lösen
