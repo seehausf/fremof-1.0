@@ -618,35 +618,107 @@ class ExcelReader:
         return excel_data
 
     def apply_timestep_management(self, excel_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Wendet Timestep-Management an (siehe Code im Artifact)."""
-        # ... [Code aus dem Artifact] ...
-
-
-# Test-Funktionen für Entwicklung
-def test_excel_reader():
-    """Testfunktion für den Excel-Reader."""
-    from pathlib import Path
-    
-    # Test mit Beispieldatei
-    example_file = Path("examples/example_1.xlsx")
-    
-    if example_file.exists():
-        settings = {'debug_mode': True}
-        reader = ExcelReader(settings)
-        
-        try:
-            data = reader.read_project_file(example_file)
-            summary = reader.get_data_summary(data)
+            """Wendet Timestep-Management auf Excel-Daten an."""
             
-            print("✅ Test erfolgreich!")
-            print("Zusammenfassung:")
-            for key, value in summary.items():
-                print(f"  {key}: {value}")
+            # Prüfe ob Timestep-Settings verfügbar sind
+            if 'timestep_settings' not in excel_data:
+                self.logger.debug("Kein timestep_settings Sheet gefunden - Timestep-Management übersprungen")
+                return excel_data
+            
+            settings_df = excel_data.get('timestep_settings')
+            
+            if settings_df is None or settings_df.empty:
+                self.logger.debug("timestep_settings Sheet ist leer - Timestep-Management übersprungen")
+                return excel_data
+            
+            # Parse Timestep-Einstellungen
+            timestep_params = {}
+            try:
+                for _, row in settings_df.iterrows():
+                    param = row.get('Parameter')
+                    value = row.get('Value')
+                    
+                    if param is None or value is None:
+                        continue
+                        
+                    if param == 'enabled' and str(value).lower() != 'true':
+                        self.logger.debug("Timestep-Management ist deaktiviert")
+                        return excel_data
+                    
+                    timestep_params[param] = value
+            except Exception as e:
+                self.logger.warning(f"Fehler beim Parsen der Timestep-Einstellungen: {e}")
+                return excel_data
+            
+            # Nur wenn explizit aktiviert
+            if not timestep_params.get('enabled') or str(timestep_params.get('enabled')).lower() != 'true':
+                self.logger.debug("Timestep-Management nicht aktiviert")
+                return excel_data
+            
+            # Timestep-Manager importieren
+            try:
+                from modules.timestep_manager import TimestepManager
                 
-        except Exception as e:
-            print(f"❌ Test fehlgeschlagen: {e}")
-    else:
-        print(f"❌ Beispieldatei nicht gefunden: {example_file}")
+                timestep_manager = TimestepManager(self.settings)
+                
+                # Strategie und Parameter bestimmen
+                strategy = timestep_params.get('timestep_strategy', 'full')
+                
+                # Für den Test nur 'full' Strategie unterstützen
+                if strategy != 'full':
+                    self.logger.warning(f"Strategie '{strategy}' noch nicht implementiert - verwende 'full'")
+                    strategy = 'full'
+                
+                # Timestep-Management anwenden
+                self.logger.info(f"🕒 Wende Timestep-Management an: Strategie '{strategy}'")
+                
+                processed_data = timestep_manager.process_timeindex_and_data(
+                    excel_data, strategy, {}
+                )
+                
+                # Statistiken zu Excel-Daten hinzufügen
+                processed_data['timestep_reduction_stats'] = timestep_manager.get_reduction_stats()
+                processed_data['solver_time_estimate'] = timestep_manager.estimate_solver_time_reduction()
+                
+                self.logger.info("✅ Timestep-Management erfolgreich angewendet")
+                
+                return processed_data
+                
+            except ImportError as e:
+                self.logger.warning(f"TimestepManager konnte nicht importiert werden: {e}")
+                return excel_data
+            except Exception as e:
+                self.logger.warning(f"⚠️  Timestep-Management fehlgeschlagen: {e}")
+                if self.settings.get('debug_mode', False):
+                    import traceback
+                    traceback.print_exc()
+                return excel_data
+    
+    # Test-Funktionen für Entwicklung
+    def test_excel_reader():
+        """Testfunktion für den Excel-Reader."""
+        from pathlib import Path
+        
+        # Test mit Beispieldatei
+        example_file = Path("examples/example_1.xlsx")
+        
+        if example_file.exists():
+            settings = {'debug_mode': True}
+            reader = ExcelReader(settings)
+            
+            try:
+                data = reader.read_project_file(example_file)
+                summary = reader.get_data_summary(data)
+                
+                print("✅ Test erfolgreich!")
+                print("Zusammenfassung:")
+                for key, value in summary.items():
+                    print(f"  {key}: {value}")
+                    
+            except Exception as e:
+                print(f"❌ Test fehlgeschlagen: {e}")
+        else:
+            print(f"❌ Beispieldatei nicht gefunden: {example_file}")
 
 
 if __name__ == "__main__":

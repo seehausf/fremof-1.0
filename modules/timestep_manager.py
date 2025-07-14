@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 """
-oemof.solph 0.6.0 Timestep-Management-Modul
-==========================================
+oemof.solph 0.6.0 Timestep-Management-Modul (Kompakte Version)
+============================================================
 
 Ermöglicht flexibles Management der Zeitauflösung für Optimierungsmodelle.
 Unterstützt Zeitbereich-Auswahl, Mittelwertbildung und Sampling-Strategien.
-
-Features:
-1. Zeitbereich-Auswahl: Nur bestimmte Perioden simulieren
-2. Mittelwertbildung: 4,6,8,12,24,48 Stunden-Mittelwerte
-3. 24n+1 Sampling: Systematisches Sampling basierend auf 24h-Zyklen
-4. Automatische Zeitreihen-Anpassung für alle Profile
 
 Autor: [Ihr Name]
 Datum: Juli 2025
@@ -26,32 +20,12 @@ from datetime import datetime, timedelta
 
 
 class TimestepManager:
-    """
-    Verwaltet verschiedene Zeitauflösungsstrategien für oemof.solph Modelle.
-    
-    oemof.solph behandelt Zeitskalierung automatisch:
-    - timeincrement wird aus timeindex.freq berechnet
-    - Variable Kosten werden automatisch mit timeincrement skaliert
-    - Flow-Werte sind Power [kW], werden zu Energie [kWh] umgerechnet
-    """
+    """Verwaltet verschiedene Zeitauflösungsstrategien für oemof.solph Modelle."""
     
     def __init__(self, settings: Dict[str, Any]):
-        """
-        Initialisiert den Timestep-Manager.
-        
-        Args:
-            settings: Konfigurationsdictionary
-        """
+        """Initialisiert den Timestep-Manager."""
         self.settings = settings
         self.logger = logging.getLogger(__name__)
-        
-        # Verfügbare Strategien
-        self.strategies = {
-            'full': self._strategy_full,
-            'time_range': self._strategy_time_range, 
-            'averaging': self._strategy_averaging,
-            'sampling_24n': self._strategy_sampling_24n
-        }
         
         # Zeitauflösungs-Statistiken
         self.reduction_stats = {}
@@ -79,8 +53,14 @@ class TimestepManager:
         processed_data = excel_data.copy()
         
         # Strategie anwenden
-        if strategy in self.strategies:
-            processed_data = self.strategies[strategy](processed_data, strategy_params)
+        if strategy == 'full':
+            processed_data = self._strategy_full(processed_data, strategy_params)
+        elif strategy == 'time_range':
+            processed_data = self._strategy_time_range(processed_data, strategy_params)
+        elif strategy == 'averaging':
+            processed_data = self._strategy_averaging(processed_data, strategy_params)
+        elif strategy == 'sampling_24n':
+            processed_data = self._strategy_sampling_24n(processed_data, strategy_params)
         else:
             raise ValueError(f"Unbekannte Strategie: {strategy}")
         
@@ -133,7 +113,7 @@ class TimestepManager:
         processed_data = excel_data.copy()
         processed_data['timeindex'] = new_timeindex
         
-        # Timeseries-Daten anpassen (N-1 Werte für N Zeitpunkte)
+        # Timeseries-Daten anpassen 
         if 'timeseries' in processed_data:
             timeseries_df = processed_data['timeseries'].copy()
             
@@ -304,12 +284,8 @@ class TimestepManager:
         if 'timestamp' not in timeseries_df.columns:
             raise ValueError("Zeitreihen-DataFrame muss 'timestamp' Spalte haben")
         
-        # Grouping-Variable erstellen (Stunden-Gruppen)
-        timeseries_df = timeseries_df.copy()
-        timeseries_df['hour_group'] = (timeseries_df.index // hours) * hours
-        
         # Profile-Spalten identifizieren
-        profile_columns = [col for col in timeseries_df.columns if col not in ['timestamp', 'hour_group']]
+        profile_columns = [col for col in timeseries_df.columns if col != 'timestamp']
         
         # Mittelwerte für jede Gruppe berechnen
         averaged_data = []
@@ -328,15 +304,7 @@ class TimestepManager:
             averaged_row = {'timestamp': new_timestamp}
             
             for col in profile_columns:
-                # Für Preise und Verfügbarkeiten: Einfacher Mittelwert
-                if any(keyword in col.lower() for keyword in ['price', 'cost', 'availability', 'profile']):
-                    averaged_row[col] = group_data[col].mean()
-                # Für Temperatur: Mittelwert (zukünftig)
-                elif 'temp' in col.lower():
-                    averaged_row[col] = group_data[col].mean()
-                else:
-                    # Standard: Mittelwert
-                    averaged_row[col] = group_data[col].mean()
+                averaged_row[col] = group_data[col].mean()
             
             averaged_data.append(averaged_row)
         
@@ -430,190 +398,3 @@ class TimestepManager:
             'estimated_time_savings': f"{((1 - estimated_time_factor) * 100):.1f}%",
             'complexity_reduction': 'quadratic' if reduction_factor < 0.5 else 'linear'
         }
-
-
-def create_timestep_settings_sheet() -> pd.DataFrame:
-    """Erstellt ein Excel-Sheet für Timestep-Einstellungen."""
-    
-    timestep_settings = pd.DataFrame({
-        'Parameter': [
-            'timestep_strategy',
-            'time_range_start',
-            'time_range_end', 
-            'averaging_hours',
-            'sampling_n_factor',
-            'enabled'
-        ],
-        'Value': [
-            'full',
-            '',
-            '',
-            '4',
-            '1',
-            'True'
-        ],
-        'Description': [
-            'Strategie: full, time_range, averaging, sampling_24n',
-            'Start-Datum für time_range (YYYY-MM-DD HH:MM)',
-            'End-Datum für time_range (YYYY-MM-DD HH:MM)',
-            'Stunden für averaging (4,6,8,12,24,48)',
-            'n-Faktor für sampling_24n (1/24, 1/12, 1/8, 1/6, 1/4, 1/2, 1, 2, 4, 6, 8, 12, 24)',
-            'Timestep-Management aktiviert (True/False)'
-        ],
-        'Examples': [
-            'full (keine Änderung)',
-            '2025-01-01 00:00',
-            '2025-01-31 23:00',
-            '6 (6-Stunden-Mittelwerte)',
-            '0.5 (alle 30min), 2 (alle 2h)',
-            'False (deaktiviert)'
-        ]
-    })
-    
-    return timestep_settings
-
-
-# Integration in Excel-Reader
-def integrate_timestep_management_in_excel_reader():
-    """
-    Code-Snippet zur Integration in excel_reader.py
-    
-    Fügen Sie diese Methode zur ExcelReader-Klasse hinzu:
-    """
-    
-    integration_code = '''
-    def apply_timestep_management(self, excel_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Wendet Timestep-Management auf Excel-Daten an."""
-        
-        # Prüfe ob Timestep-Settings verfügbar sind
-        if 'timestep_settings' not in excel_data:
-            return excel_data  # Keine Timestep-Einstellungen
-        
-        settings_df = excel_data['timestep_settings']
-        
-        # Parse Timestep-Einstellungen
-        timestep_params = {}
-        for _, row in settings_df.iterrows():
-            param = row['Parameter']
-            value = row['Value']
-            
-            if param == 'enabled' and value.lower() != 'true':
-                return excel_data  # Timestep-Management deaktiviert
-            
-            timestep_params[param] = value
-        
-        # Timestep-Manager initialisieren
-        from modules.timestep_manager import TimestepManager
-        
-        timestep_manager = TimestepManager(self.settings)
-        
-        # Strategie und Parameter bestimmen
-        strategy = timestep_params.get('timestep_strategy', 'full')
-        strategy_params = {}
-        
-        if strategy == 'time_range':
-            strategy_params = {
-                'start_date': timestep_params.get('time_range_start'),
-                'end_date': timestep_params.get('time_range_end')
-            }
-        elif strategy == 'averaging':
-            strategy_params = {
-                'hours': int(timestep_params.get('averaging_hours', 4))
-            }
-        elif strategy == 'sampling_24n':
-            strategy_params = {
-                'n': float(timestep_params.get('sampling_n_factor', 1))
-            }
-        
-        # Timestep-Management anwenden
-        try:
-            processed_data = timestep_manager.process_timeindex_and_data(
-                excel_data, strategy, strategy_params
-            )
-            
-            # Statistiken zu Excel-Daten hinzufügen
-            processed_data['timestep_reduction_stats'] = timestep_manager.get_reduction_stats()
-            processed_data['solver_time_estimate'] = timestep_manager.estimate_solver_time_reduction()
-            
-            return processed_data
-            
-        except Exception as e:
-            self.logger.warning(f"⚠️  Timestep-Management fehlgeschlagen: {e}")
-            return excel_data
-    '''
-    
-    return integration_code
-
-
-# Test-Funktion
-def test_timestep_manager():
-    """Testfunktion für den Timestep-Manager."""
-    
-    # Test-Daten erstellen
-    timeindex = pd.date_range('2025-01-01', periods=168, freq='h')  # 1 Woche
-    
-    timeseries_df = pd.DataFrame({
-        'timestamp': timeindex[:-1],  # N-1 Werte für N Zeitpunkte
-        'pv_profile': np.random.rand(167) * 0.8,
-        'load_profile': np.random.rand(167) * 50 + 20,
-        'price_profile': np.random.rand(167) * 0.1 + 0.2
-    })
-    
-    test_excel_data = {
-        'timeindex': timeindex,
-        'timeseries': timeseries_df,
-        'timeindex_info': {
-            'start': timeindex[0],
-            'end': timeindex[-1],
-            'periods': len(timeindex),
-            'freq': 'h',
-            'has_freq': True
-        }
-    }
-    
-    # Timestep-Manager testen
-    settings = {'debug_mode': True}
-    manager = TimestepManager(settings)
-    
-    print("🧪 Teste Timestep-Manager...")
-    
-    # Test 1: Full Strategy
-    print("\n1. Test: Full Strategy")
-    result1 = manager.process_timeindex_and_data(test_excel_data, 'full')
-    stats1 = manager.get_reduction_stats()
-    print(f"   Perioden: {stats1['original_periods']} → {stats1['final_periods']}")
-    
-    # Test 2: Time Range
-    print("\n2. Test: Time Range Strategy")
-    result2 = manager.process_timeindex_and_data(
-        test_excel_data, 
-        'time_range', 
-        {'start_date': '2025-01-02', 'end_date': '2025-01-04'}
-    )
-    stats2 = manager.get_reduction_stats()
-    print(f"   Perioden: {stats2['original_periods']} → {stats2['final_periods']} ({stats2['time_savings']})")
-    
-    # Test 3: Averaging
-    print("\n3. Test: Averaging Strategy (6h)")
-    result3 = manager.process_timeindex_and_data(test_excel_data, 'averaging', {'hours': 6})
-    stats3 = manager.get_reduction_stats()
-    print(f"   Perioden: {stats3['original_periods']} → {stats3['final_periods']} ({stats3['time_savings']})")
-    
-    # Test 4: Sampling 24n+1
-    print("\n4. Test: Sampling 24n+1 (n=0.5)")
-    result4 = manager.process_timeindex_and_data(test_excel_data, 'sampling_24n', {'n': 0.5})
-    stats4 = manager.get_reduction_stats()
-    print(f"   Perioden: {stats4['original_periods']} → {stats4['final_periods']} ({stats4['time_savings']})")
-    print(f"   Muster: {stats4['sampling_pattern']}")
-    
-    # Solver-Zeit-Schätzung
-    print("\n5. Solver-Zeit-Schätzungen:")
-    for i, result in enumerate([result1, result2, result3, result4], 1):
-        time_estimate = manager.estimate_solver_time_reduction()
-        print(f"   Test {i}: {time_estimate.get('estimated_time_savings', 'N/A')}")
-    
-    print("\n✅ Timestep-Manager Test abgeschlossen!")
-
-
-if __name__ == "__main__":
-    test_timestep_manager()
