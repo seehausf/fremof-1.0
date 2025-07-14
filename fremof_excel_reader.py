@@ -20,7 +20,21 @@ import numpy as np
 import os
 import logging
 from typing import Dict, List, Any, Optional, Union
+
+# Oemof-solph 0.6.0 Imports
 import oemof.solph as solph
+from oemof.solph import buses, components, flows, _options
+
+# Aliase für einfachere Verwendung
+Bus = buses.Bus
+EnergySystem = solph.EnergySystem
+Model = solph.Model
+Source = components.Source
+Sink = components.Sink
+Converter = components.Converter
+Flow = flows.Flow
+Investment = _options.Investment
+
 
 class FremofExcelReader:
     """Erweiterte Excel-Reader Klasse für Fremof Framework"""
@@ -212,7 +226,7 @@ class FremofExcelReader:
             logging.warning(f"Timeseries-Keyword '{keyword}' nicht gefunden!")
             return None
     
-    def create_buses(self) -> Dict[str, solph.Bus]:
+    def create_buses(self) -> Dict[str, Bus]:
         """
         Erstellt alle Bus-Objekte
         
@@ -226,14 +240,14 @@ class FremofExcelReader:
         
         for _, row in buses_df.iterrows():
             if row.get('include', 1) == 1:  # Default: include=1
-                bus = solph.Bus(label=row['label'])
+                bus = Bus(label=row['label'])
                 buses[row['label']] = bus
                 
         self.buses = buses
         logging.info(f"{len(buses)} Busse erstellt")
         return buses
     
-    def create_sources(self) -> List[solph.Source]:
+    def create_sources(self) -> List[Source]:
         """
         Erstellt alle Source-Komponenten
         
@@ -269,9 +283,9 @@ class FremofExcelReader:
                 if i == 0:
                     if row.get('investment', 0) == 1:
                         invest_args = self._create_investment_args(row)
-                        flow_args['nominal_value'] = solph.Investment(**invest_args)
+                        flow_args['nominal_capacity'] = Investment(**invest_args)
                     else:
-                        flow_args['nominal_value'] = row.get('existing', 0)
+                        flow_args['nominal_capacity'] = row.get('existing', 0)
                 
                 # Output Relation
                 if i < len(output_relations):
@@ -287,12 +301,12 @@ class FremofExcelReader:
                             flow_args['fix'] = relation if relation != 1.0 else None
                         else:
                             # Für weitere Outputs als conversion_factor
-                            flow_args['conversion_factor'] = relation
+                            flow_args['conversion_factors'] = relation
                 
-                outputs[self.buses[bus_label]] = solph.Flow(**flow_args)
+                outputs[self.buses[bus_label]] = Flow(**flow_args)
             
             # Source erstellen
-            source = solph.Source(
+            source = Source(
                 label=row['label'],
                 outputs=outputs
             )
@@ -301,7 +315,7 @@ class FremofExcelReader:
         logging.info(f"{len(sources)} Sources erstellt")
         return sources
     
-    def create_sinks(self) -> List[solph.Sink]:
+    def create_sinks(self) -> List[Sink]:
         """
         Erstellt alle Sink-Komponenten
         
@@ -337,9 +351,9 @@ class FremofExcelReader:
                 if i == 0:
                     if row.get('investment', 0) == 1:
                         invest_args = self._create_investment_args(row)
-                        flow_args['nominal_value'] = solph.Investment(**invest_args)
+                        flow_args['nominal_capacity'] = Investment(**invest_args)
                     else:
-                        flow_args['nominal_value'] = row.get('existing', 0)
+                        flow_args['nominal_capacity'] = row.get('existing', 0)
                 
                 # Input Relation
                 if i < len(input_relations):
@@ -355,12 +369,12 @@ class FremofExcelReader:
                             flow_args['fix'] = relation if relation != 1.0 else None
                         else:
                             # Für weitere Inputs als conversion_factor
-                            flow_args['conversion_factor'] = relation
+                            flow_args['conversion_factors'] = relation
                 
-                inputs[self.buses[bus_label]] = solph.Flow(**flow_args)
+                inputs[self.buses[bus_label]] = Flow(**flow_args)
             
             # Sink erstellen
-            sink = solph.Sink(
+            sink = Sink(
                 label=row['label'],
                 inputs=inputs
             )
@@ -369,7 +383,7 @@ class FremofExcelReader:
         logging.info(f"{len(sinks)} Sinks erstellt")
         return sinks
     
-    def create_converters(self) -> List[solph.Converter]:
+    def create_converters(self) -> List[Converter]:
         """
         Erstellt alle Converter-Komponenten
         
@@ -411,9 +425,9 @@ class FremofExcelReader:
                             flow_args['fix'] = ts_data
                     else:
                         if relation != 1.0:
-                            flow_args['conversion_factor'] = relation
+                            flow_args['conversion_factors'] = relation
                 
-                inputs[self.buses[bus_label]] = solph.Flow(**flow_args)
+                inputs[self.buses[bus_label]] = Flow(**flow_args)
             
             # Output-Flows erstellen  
             outputs = {}
@@ -427,9 +441,9 @@ class FremofExcelReader:
                 if i == 0:
                     if row.get('investment', 0) == 1:
                         invest_args = self._create_investment_args(row)
-                        flow_args['nominal_value'] = solph.Investment(**invest_args)
+                        flow_args['nominal_capacity'] = Investment(**invest_args)
                     else:
-                        flow_args['nominal_value'] = row.get('existing', 0)
+                        flow_args['nominal_capacity'] = row.get('existing', 0)
                 
                 # Output Relation
                 if i < len(output_relations):
@@ -440,12 +454,12 @@ class FremofExcelReader:
                             flow_args['fix'] = ts_data
                     else:
                         if relation != 1.0:
-                            flow_args['conversion_factor'] = relation
+                            flow_args['conversion_factors'] = relation
                 
-                outputs[self.buses[bus_label]] = solph.Flow(**flow_args)
+                outputs[self.buses[bus_label]] = Flow(**flow_args)
             
             # Converter erstellen
-            converter = solph.Converter(
+            converter = Converter(
                 label=row['label'],
                 inputs=inputs,
                 outputs=outputs
@@ -455,7 +469,7 @@ class FremofExcelReader:
         logging.info(f"{len(converters)} Converters erstellt")
         return converters
     
-    def create_energy_system(self, timeindex: pd.DatetimeIndex) -> solph.EnergySystem:
+    def create_energy_system(self, timeindex: pd.DatetimeIndex) -> EnergySystem:
         """
         Erstellt das komplette Energiesystem
         
@@ -466,7 +480,7 @@ class FremofExcelReader:
             
         Returns
         -------
-        solph.EnergySystem
+        EnergySystem
             Vollständiges Energiesystem
         """
         # Daten einlesen
@@ -481,7 +495,7 @@ class FremofExcelReader:
         # Energiesystem zusammenbauen
         all_components = list(buses.values()) + sources + sinks + converters
         
-        energy_system = solph.EnergySystem(
+        energy_system = EnergySystem(
             timeindex=timeindex,
             infer_last_interval=False
         )
@@ -492,7 +506,7 @@ class FremofExcelReader:
         return energy_system
 
 
-def create_energy_system_from_excel(filename: str, timeindex: pd.DatetimeIndex) -> solph.EnergySystem:
+def create_energy_system_from_excel(filename: str, timeindex: pd.DatetimeIndex) -> EnergySystem:
     """
     Convenience-Funktion zum Erstellen eines Energiesystems aus Excel
     
@@ -526,7 +540,7 @@ if __name__ == "__main__":
     
     # Energiesystem aus Excel erstellen
     try:
-        energy_system = create_energy_system_from_excel('scenario.xlsx', timeindex)
+        energy_system = create_energy_system_from_excel('fremof_simple_example.xlsx', timeindex)
         print("Energiesystem erfolgreich erstellt!")
         
         # Optional: Modell erstellen und lösen
