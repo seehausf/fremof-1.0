@@ -1,13 +1,13 @@
 modules:
-  analyzer: false
   excel_reader: true
+  system_builder: true
   optimizer: true
   results_processor: true
-  system_builder: true
-  visualizer: false
+  visualizer: true
+  analyzer: false
 settings:
-  create_plots: false
-  debug_mode: false
-  output_format: xlsx
-  save_model: false
   solver: cbc
+  output_format: xlsx
+  create_plots: false
+  save_model: false
+  debug_mode: false

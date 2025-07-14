@@ -53,35 +53,38 @@ class Visualizer:
             self.logger.warning("⚠️  Matplotlib nicht verfügbar - Visualisierungen deaktiviert")
     
     def create_visualizations(self, results: Dict[str, Any], energy_system: Any,
-                            excel_data: Dict[str, Any]) -> List[Path]:
-        """
-        Erstellt alle Visualisierungen.
-        
-        Args:
-            results: Optimierungsergebnisse
-            energy_system: EnergySystem
-            excel_data: Original Excel-Daten
+                                excel_data: Dict[str, Any]) -> List[Path]:
+            """
+            Erstellt alle Visualisierungen.
             
-        Returns:
-            Liste der erstellten Dateien
-        """
-        if not MATPLOTLIB_AVAILABLE:
-            self.logger.info("📊 Visualisierungen übersprungen (Matplotlib fehlt)")
-            return []
-        
-        self.logger.info("🎨 Erstelle Visualisierungen...")
-        
-        # Basis-Plots erstellen
-        self._create_flow_plot(results)
-        self._create_energy_balance_plot(results)
-        self._create_cost_breakdown_plot(results)
-        
-        # Erweiterte Plots (falls Daten verfügbar)
-        if excel_data.get('timeseries') is not None:
-            self._create_timeseries_comparison(results, excel_data)
-        
-        self.logger.info(f"✅ {len(self.created_files)} Visualisierungen erstellt")
-        return self.created_files
+            Args:
+                results: Optimierungsergebnisse
+                energy_system: EnergySystem
+                excel_data: Original Excel-Daten
+                
+            Returns:
+                Liste der erstellten Dateien
+            """
+            if not MATPLOTLIB_AVAILABLE:
+                self.logger.info("📊 Visualisierungen übersprungen (Matplotlib fehlt)")
+                return []
+            
+            self.logger.info("🎨 Erstelle Visualisierungen...")
+            
+            # *** NEUE NETZWERK-VISUALISIERUNGEN HINZUFÜGEN ***
+            self.create_network_visualizations(results, energy_system, excel_data)
+            
+            # Basis-Plots erstellen
+            self._create_flow_plot(results)
+            self._create_energy_balance_plot(results)
+            self._create_cost_breakdown_plot(results)
+            
+            # Erweiterte Plots (falls Daten verfügbar)
+            if excel_data.get('timeseries') is not None:
+                self._create_timeseries_comparison(results, excel_data)
+            
+            self.logger.info(f"✅ {len(self.created_files)} Visualisierungen erstellt")
+            return self.created_files
     
     def _create_flow_plot(self, results: Dict[str, Any]):
         """Erstellt Flow-Zeitreihen-Plot."""
@@ -341,6 +344,44 @@ class Visualizer:
             
         except Exception as e:
             self.logger.warning(f"Zeitreihen-Vergleich konnte nicht erstellt werden: {e}")
+    
+    def create_network_visualizations(self, results, energy_system, excel_data):
+            """Erstellt Netzwerk-Visualisierungen (Erweiterung für Visualizer)."""
+            
+            try:
+                from modules.network_visualizer import EnergySystemNetworkVisualizer
+                
+                network_viz = EnergySystemNetworkVisualizer(self.output_dir, self.settings)
+                
+                if network_viz.is_available():
+                    created_count = 0
+                    
+                    # Haupt-Netzwerk-Diagramm
+                    network_file = network_viz.create_network_diagram(energy_system)
+                    if network_file:
+                        self.created_files.append(network_file)
+                        created_count += 1
+                    
+                    # Flow-Kapazitäts-Diagramm
+                    capacity_file = network_viz.create_flow_capacity_diagram(energy_system)
+                    if capacity_file:
+                        self.created_files.append(capacity_file)
+                        created_count += 1
+                    
+                    # System-Dashboard
+                    dashboard_file = network_viz.create_system_overview_dashboard(energy_system)
+                    if dashboard_file:
+                        self.created_files.append(dashboard_file)
+                        created_count += 1
+                    
+                    self.logger.info(f"✅ {created_count} Netzwerk-Visualisierungen erstellt")
+                else:
+                    self.logger.info("📊 Netzwerk-Visualisierungen übersprungen (NetworkX/Matplotlib fehlt)")
+                    
+            except ImportError as e:
+                self.logger.info(f"📊 Network Visualizer nicht verfügbar: {e}")
+            except Exception as e:
+                self.logger.warning(f"⚠️  Fehler bei Netzwerk-Visualisierung: {e}")
 
 
 # Test-Funktion
