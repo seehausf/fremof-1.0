@@ -155,6 +155,169 @@ solph.NonConvex(
 
 ---
 
+## Zusammenhänge zwischen Flow(), Investment() und NonConvex()
+
+### 1. **Flow() als Basis-Klasse**
+Flow() ist die fundamentale Klasse, die Energieflüsse zwischen Komponenten definiert. Sie kann drei verschiedene "Modi" haben:
+
+#### **Einfacher Flow (SimpleFlowBlock)**
+```python
+# Nur mit fester nominal_capacity
+flow = solph.Flow(nominal_capacity=100, variable_costs=0.05)
+```
+
+#### **Investment Flow (InvestmentFlowBlock)**
+```python
+# nominal_capacity wird durch Investment-Objekt ersetzt
+flow = solph.Flow(
+    nominal_capacity=solph.Investment(
+        maximum=1000,
+        minimum=50,
+        ep_costs=40
+    )
+)
+```
+
+#### **NonConvex Flow (NonConvexFlowBlock)**
+```python
+# Mit NonConvex-Objekt für binäre Variablen
+flow = solph.Flow(
+    nominal_capacity=100,
+    nonconvex=solph.NonConvex(
+        minimum_uptime=4,
+        startup_costs=100
+    )
+)
+```
+
+### 2. **Investment() Integration**
+Das Investment-Objekt kann direkt als nominal_capacity Parameter verwendet werden:
+
+- **In 0.6.0 NEU:** `nominal_capacity` akzeptiert Investment-Objekte
+- **Deprecated:** Das separate `investment` Argument wurde entfernt
+- **nonconvex Parameter im Investment:** Wenn nonconvex=True, wird eine binäre Variable für den Investment-Status erstellt
+
+```python
+# Investment mit NonConvex-Eigenschaften
+investment_obj = solph.Investment(
+    maximum=500,
+    minimum=100,
+    ep_costs=50,
+    nonconvex=True,     # Binäre Investment-Variable
+    offset=1000         # Fixkosten unabhängig von Kapazität
+)
+
+flow = solph.Flow(nominal_capacity=investment_obj)
+```
+
+### 3. **NonConvex() Integration**
+NonConvex definiert binäre Variablen für Flows mit An/Aus-Zuständen:
+
+- **Separate Verwendung:** NonConvex kann unabhängig von Investment verwendet werden
+- **Kombinierte Verwendung:** Es gibt eine spezielle InvestNonConvexFlowBlock Klasse für beide Optionen
+
+```python
+# NonConvex ohne Investment
+flow = solph.Flow(
+    nominal_capacity=200,
+    nonconvex=solph.NonConvex(
+        minimum_uptime=3,
+        minimum_downtime=2,
+        startup_costs=50,
+        shutdown_costs=30
+    )
+)
+```
+
+### 4. **Kombinierte Verwendung (Investment + NonConvex)**
+In 0.6.0 gibt es eine InvestNonConvexFlowBlock Klasse für beide Optionen zusammen:
+
+```python
+# WARNUNG: Diese Kombination ist komplex und rechenintensiv!
+flow = solph.Flow(
+    nominal_capacity=solph.Investment(
+        maximum=1000,
+        minimum=200,
+        ep_costs=60,
+        nonconvex=True,    # Binäre Investment-Variable
+        offset=2000        # Fixkosten für Investment
+    ),
+    nonconvex=solph.NonConvex(
+        minimum_uptime=4,
+        startup_costs=150
+    )
+)
+```
+
+### 5. **Wichtige Einschränkungen und Besonderheiten**
+
+#### **Kompatibilitätsprobleme:**
+- Bei nonconvex investment flows muss existing flow capacity Null sein
+- Investment + NonConvex erhöht die Rechenzeit um das 9-fache
+- In älteren Versionen war Investment nicht kompatibel mit NonConvex
+
+#### **OffsetConverter Spezialfall:**
+Der OffsetConverter benötigt zwingend einen NonConvex Flow am Ausgang:
+
+```python
+converter = solph.components.OffsetConverter(
+    inputs={bus_in: solph.Flow()},
+    outputs={bus_out: solph.Flow(
+        nominal_capacity=100,
+        min=0.5,
+        nonconvex=solph.NonConvex()  # ERFORDERLICH für OffsetConverter
+    )},
+    conversion_factors={bus_in: 2.0},
+    normed_offsets={bus_in: 0.1}
+)
+```
+
+### 6. **Praktische Anwendungsszenarien**
+
+#### **Nur Investment (häufigster Fall):**
+```python
+# Optimierung der Kapazität ohne technische Constraints
+pv = solph.components.Source(
+    outputs={el_bus: solph.Flow(
+        nominal_capacity=solph.Investment(maximum=5000, ep_costs=800),
+        max=pv_profile
+    )}
+)
+```
+
+#### **Nur NonConvex:**
+```python
+# Dispatch-Optimierung mit technischen Constraints
+chp = solph.components.Converter(
+    inputs={gas_bus: solph.Flow()},
+    outputs={el_bus: solph.Flow(
+        nominal_capacity=500,
+        nonconvex=solph.NonConvex(
+            minimum_uptime=4,
+            startup_costs=200
+        )
+    )}
+)
+```
+
+#### **Investment + NonConvex (nur wenn unbedingt nötig):**
+```python
+# Sowohl Kapazitäts- als auch Dispatch-Optimierung
+generator = solph.components.Source(
+    outputs={el_bus: solph.Flow(
+        nominal_capacity=solph.Investment(
+            maximum=1000, 
+            ep_costs=1200,
+            nonconvex=True,
+            offset=5000
+        ),
+        nonconvex=solph.NonConvex(minimum_uptime=6)
+    )}
+)
+```
+
+---
+
 ## Todos
 
 ### Phase 1: Projektplanung ✅
