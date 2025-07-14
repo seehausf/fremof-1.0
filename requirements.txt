@@ -1,0 +1,32 @@
+# oemof-solph Energiesystemmodellierung
+# Core Dependencies
+pandas>=1.5.0
+numpy>=1.21.0
+openpyxl>=3.0.0
+
+# oemof framework
+oemof.solph>=0.6.0
+
+# Solver (einer auswählen)
+# CBC Solver (empfohlen, kostenlos)
+# Installation: conda install -c conda-forge coincbc
+
+# Optimization
+pyomo>=6.4.0
+
+# Visualization Dependencies
+matplotlib>=3.5.0
+plotly>=5.0.0
+networkx>=2.8.0
+
+# oemof-visio (optional, für erweiterte Visualisierung)
+# Installation separat: pip install git+https://github.com/oemof/oemof_visio.git[network]
+# Für Windows zusätzlich Graphviz von https://graphviz.org/download/ installieren
+
+# Development & Testing (optional)
+pytest>=7.0.0
+black>=22.0.0
+
+# Solver Alternativen (commercial)
+# gurobi  # Lizenz erforderlich
+# cplex   # Lizenz erforderlich
