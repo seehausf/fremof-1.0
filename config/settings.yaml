@@ -1,0 +1,13 @@
+modules:
+  analyzer: false
+  excel_reader: true
+  optimizer: true
+  results_processor: true
+  system_builder: true
+  visualizer: false
+settings:
+  create_plots: false
+  debug_mode: false
+  output_format: xlsx
+  save_model: false
+  solver: cbc
