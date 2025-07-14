@@ -132,6 +132,8 @@ class EnergySystemProject:
             start_time = time.time()
             self.excel_data = self.modules['excel_reader'].read_project_file(self.project_file)
             
+            self.excel_data = self.modules['excel_reader'].process_excel_data(self.project_file)
+            
             elapsed_time = time.time() - start_time
             self.logger.info(f"✅ Excel-Daten erfolgreich eingelesen ({elapsed_time:.2f}s)")
             

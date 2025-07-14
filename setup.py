@@ -6,6 +6,8 @@ oemof.solph 0.6.0 Setup und Beispiel-Generierung
 Erstellt die Projektstruktur und generiert drei Beispiel-Excel-Dateien
 für unterschiedliche Komplexitätsstufen der Energiesystemmodellierung.
 
+NEU: Timestep-Management für flexible Zeitauflösungen
+
 Autor: [Ihr Name]
 Datum: Juli 2025
 Version: 1.0.0
@@ -166,6 +168,47 @@ def create_renewable_profile(timeindex, technology="pv", capacity_factor=0.15):
     return np.array(profile)
 
 
+def create_timestep_settings_sheet() -> pd.DataFrame:
+    """Erstellt ein Excel-Sheet für Timestep-Einstellungen."""
+    
+    timestep_settings = pd.DataFrame({
+        'Parameter': [
+            'timestep_strategy',
+            'time_range_start',
+            'time_range_end', 
+            'averaging_hours',
+            'sampling_n_factor',
+            'enabled'
+        ],
+        'Value': [
+            'full',
+            '',
+            '',
+            '4',
+            '1',
+            'False'
+        ],
+        'Description': [
+            'Strategie: full, time_range, averaging, sampling_24n',
+            'Start-Datum für time_range (YYYY-MM-DD HH:MM)',
+            'End-Datum für time_range (YYYY-MM-DD HH:MM)',
+            'Stunden für averaging (4,6,8,12,24,48)',
+            'n-Faktor für sampling_24n (1/24, 1/12, 1/8, 1/6, 1/4, 1/2, 1, 2, 4, 6, 8, 12, 24)',
+            'Timestep-Management aktiviert (True/False)'
+        ],
+        'Examples': [
+            'averaging (6h-Mittelwerte für schnelle Analyse)',
+            '2025-01-01 00:00 (Start der Simulation)',
+            '2025-01-31 23:00 (Ende der Simulation)',
+            '6 (6-Stunden-Mittelwerte, 75% Zeitersparnis)',
+            '0.25 (alle 6h), 1 (stündlich), 4 (alle 4h)',
+            'True (aktiviert), False (deaktiviert)'
+        ]
+    })
+    
+    return timestep_settings
+
+
 def create_example_1_simple():
     """Erstellt Beispiel 1: Einfaches System (PV + Netz + Last)."""
     print("📋 Erstelle Beispiel 1: Einfaches System...")
@@ -178,7 +221,7 @@ def create_example_1_simple():
     
     with pd.ExcelWriter(filename, engine='openpyxl') as writer:
         
-        # Settings Sheet (vorerst leer)
+        # Settings Sheet
         settings_df = pd.DataFrame({
             'Parameter': ['timeindex_start', 'timeindex_periods', 'timeindex_freq', 'solver'],
             'Value': ['2025-01-01', 168, 'h', 'cbc'],
@@ -190,6 +233,10 @@ def create_example_1_simple():
             ]
         })
         settings_df.to_excel(writer, sheet_name='settings', index=False)
+        
+        # Timestep Settings Sheet (NEU)
+        timestep_settings_df = create_timestep_settings_sheet()
+        timestep_settings_df.to_excel(writer, sheet_name='timestep_settings', index=False)
         
         # Buses Sheet
         buses_df = pd.DataFrame({
@@ -277,6 +324,14 @@ def create_example_2_medium():
             ]
         })
         settings_df.to_excel(writer, sheet_name='settings', index=False)
+        
+        # Timestep Settings Sheet (NEU) - Konfiguriert für 6h-Mittelwerte
+        timestep_settings_df = create_timestep_settings_sheet()
+        # Für mittleres Beispiel: 6h-Mittelwerte als Standard
+        timestep_settings_df.loc[timestep_settings_df['Parameter'] == 'timestep_strategy', 'Value'] = 'averaging'
+        timestep_settings_df.loc[timestep_settings_df['Parameter'] == 'averaging_hours', 'Value'] = '6'
+        timestep_settings_df.loc[timestep_settings_df['Parameter'] == 'enabled', 'Value'] = 'False'  # Standardmäßig deaktiviert
+        timestep_settings_df.to_excel(writer, sheet_name='timestep_settings', index=False)
         
         # Buses Sheet
         buses_df = pd.DataFrame({
@@ -371,6 +426,14 @@ def create_example_3_complex():
             ]
         })
         settings_df.to_excel(writer, sheet_name='settings', index=False)
+        
+        # Timestep Settings Sheet (NEU) - Konfiguriert für Sampling
+        timestep_settings_df = create_timestep_settings_sheet()
+        # Für komplexes Beispiel: 24n+1 Sampling als Standard
+        timestep_settings_df.loc[timestep_settings_df['Parameter'] == 'timestep_strategy', 'Value'] = 'sampling_24n'
+        timestep_settings_df.loc[timestep_settings_df['Parameter'] == 'sampling_n_factor', 'Value'] = '0.25'  # Alle 6h
+        timestep_settings_df.loc[timestep_settings_df['Parameter'] == 'enabled', 'Value'] = 'False'  # Standardmäßig deaktiviert
+        timestep_settings_df.to_excel(writer, sheet_name='timestep_settings', index=False)
         
         # Buses Sheet
         buses_df = pd.DataFrame({
@@ -476,6 +539,11 @@ def create_example_files():
     print("   📋 example_1.xlsx - Einfaches System (PV + Netz + Last)")
     print("   📋 example_2.xlsx - Mittleres System (PV + Wind + Gas)")
     print("   📋 example_3.xlsx - Komplexes System (mit Investment)")
+    print("\n🕒 Timestep-Management:")
+    print("   📊 Alle Beispiele enthalten 'timestep_settings' Sheet")
+    print("   ⚙️  Standardmäßig deaktiviert - kann durch 'enabled: True' aktiviert werden")
+    print("   📈 Example 2: Vorkonfiguriert für 6h-Mittelwerte")
+    print("   🎯 Example 3: Vorkonfiguriert für 6h-Sampling")
 
 
 def create_requirements_file():
@@ -522,6 +590,12 @@ def main():
     print("1. Installieren Sie die Abhängigkeiten: pip install -r requirements.txt")
     print("2. Starten Sie das Programm: python runme.py")
     print("3. Oder testen Sie direkt: python main.py examples/example_1.xlsx")
+    print("\n🕒 Timestep-Management aktivieren:")
+    print("1. Öffnen Sie eine example_X.xlsx Datei")
+    print("2. Gehen Sie zum 'timestep_settings' Sheet")
+    print("3. Setzen Sie 'enabled' auf 'True'")
+    print("4. Wählen Sie eine Strategie (full, time_range, averaging, sampling_24n)")
+    print("5. Konfigurieren Sie die entsprechenden Parameter")
 
 
 if __name__ == "__main__":

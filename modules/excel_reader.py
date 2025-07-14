@@ -605,6 +605,21 @@ class ExcelReader:
             summary['Profile'] = f"{profile_count} Zeitreihen"
         
         return summary
+    
+    def process_excel_data(self, file_path: Path) -> Dict[str, Any]:
+        """Hauptfunktion: Excel einlesen + Timestep-Management anwenden."""
+        
+        # Standard Excel-Einlesen
+        excel_data = self.read_project_file(file_path)
+        
+        # Timestep-Management anwenden (falls konfiguriert)
+        excel_data = self.apply_timestep_management(excel_data)
+        
+        return excel_data
+
+    def apply_timestep_management(self, excel_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Wendet Timestep-Management an (siehe Code im Artifact)."""
+        # ... [Code aus dem Artifact] ...
 
 
 # Test-Funktionen für Entwicklung
