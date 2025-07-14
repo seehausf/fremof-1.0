@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-oemof.solph 0.6.0 Excel-Datenimport Modul
-========================================
+oemof.solph 0.6.0 Excel-Datenimport Modul (Korrigiert)
+=====================================================
 
 Liest Excel-Dateien mit Energiesystemdefinitionen ein und validiert die Daten.
 Unterstützt verschiedene Sheets für Komponenten, Zeitreihen und Einstellungen.
 
+KORRIGIERT: Syntaxfehler im apply_timestep_management behoben.
+
 Autor: [Ihr Name]
 Datum: Juli 2025
-Version: 1.0.0
+Version: 1.0.1
 """
 
 import pandas as pd
@@ -34,7 +36,8 @@ class ExcelReader:
         
         # Erwartete Sheets
         self.required_sheets = ['buses', 'sources', 'sinks', 'simple_transformers']
-        self.optional_sheets = ['settings', 'timeseries', 'storages', 'links', 'complex_components']
+        self.optional_sheets = ['settings', 'timeseries', 'storages', 'links', 
+                               'complex_components', 'timestep_settings']
         
         # Datencontainer
         self.excel_data = {}
@@ -154,6 +157,78 @@ class ExcelReader:
         # Settings validieren (falls vorhanden)
         if 'settings' in self.excel_data:
             self._validate_settings()
+        
+        # Timestep-Settings validieren (falls vorhanden)
+        if 'timestep_settings' in self.excel_data:
+            self._validate_timestep_settings()
+    
+    def _validate_timestep_settings(self):
+        """Validiert die Timestep-Settings."""
+        timestep_df = self.excel_data['timestep_settings']
+        
+        self.logger.info("🕒 Validiere Timestep-Settings...")
+        
+        if 'Parameter' not in timestep_df.columns or 'Value' not in timestep_df.columns:
+            self.validation_warnings.append("Timestep-Settings: Erwartete Spalten 'Parameter' und 'Value'")
+            return
+        
+        # Parameter zu Dictionary konvertieren
+        params = dict(zip(timestep_df['Parameter'], timestep_df['Value']))
+        
+        # Prüfe ob enabled gesetzt ist
+        enabled = params.get('enabled', 'false')
+        if str(enabled).lower() in ['true', '1', 'yes', 'ja']:
+            self.logger.info("   ✅ Timestep-Management ist aktiviert")
+            
+            # Strategie prüfen
+            strategy = params.get('timestep_strategy', 'full')
+            valid_strategies = ['full', 'time_range', 'averaging', 'sampling_24n']
+            
+            if strategy not in valid_strategies:
+                self.validation_warnings.append(
+                    f"Timestep-Settings: Unbekannte Strategie '{strategy}'. "
+                    f"Gültig: {valid_strategies}"
+                )
+            else:
+                self.logger.info(f"   📋 Strategie: {strategy}")
+                
+                # Strategie-spezifische Parameter prüfen
+                if strategy == 'time_range':
+                    if 'start_date' not in params or 'end_date' not in params:
+                        self.validation_errors.append(
+                            "Timestep-Settings: time_range Strategie benötigt 'start_date' und 'end_date'"
+                        )
+                
+                elif strategy == 'averaging':
+                    hours = params.get('hours', 4)
+                    try:
+                        hours = int(hours)
+                        if hours not in [4, 6, 8, 12, 24, 48]:
+                            self.validation_warnings.append(
+                                f"Timestep-Settings: Averaging hours {hours} nicht empfohlen. "
+                                "Empfohlene Werte: 4, 6, 8, 12, 24, 48"
+                            )
+                    except (ValueError, TypeError):
+                        self.validation_errors.append(
+                            f"Timestep-Settings: Ungültiger 'hours' Wert: {hours}"
+                        )
+                
+                elif strategy == 'sampling_24n':
+                    n = params.get('n', 1)
+                    try:
+                        n = float(n)
+                        valid_n = [1/24, 1/12, 1/8, 1/6, 1/4, 1/3, 1/2, 1, 2, 3, 4, 6, 8, 12, 24]
+                        if n not in valid_n:
+                            self.validation_warnings.append(
+                                f"Timestep-Settings: n-Wert {n} nicht empfohlen. "
+                                f"Empfohlene Werte: {valid_n}"
+                            )
+                    except (ValueError, TypeError):
+                        self.validation_errors.append(
+                            f"Timestep-Settings: Ungültiger 'n' Wert: {n}"
+                        )
+        else:
+            self.logger.info("   ⏭️  Timestep-Management ist deaktiviert")
     
     def _validate_buses(self):
         """Validiert die Bus-Definitionen."""
@@ -277,7 +352,7 @@ class ExcelReader:
         for _, transformer in active_transformers.iterrows():
             try:
                 factor = float(transformer['conversion_factor'])
-                if factor <= 0 or factor > 2:  # Warnung bei unplausiblen Werten
+                if factor <= 0 or factor > 2:
                     self.validation_warnings.append(
                         f"Transformer '{transformer['label']}': Unplausible Conversion Factor {factor}"
                     )
@@ -355,14 +430,14 @@ class ExcelReader:
         
         # Auf Lücken prüfen (nur Warnung)
         time_diff = timeseries_df['timestamp'].diff()
-        if len(time_diff.unique()) > 2:  # Mehr als NaT und ein Intervall
+        if len(time_diff.unique()) > 2:
             self.validation_warnings.append("Timeseries: Unregelmäßige Zeitintervalle erkannt")
         
         # Profile-Spalten prüfen
         profile_columns = [col for col in timeseries_df.columns if col != 'timestamp']
         
         for col in profile_columns:
-            # Negative Werte prüfen (nur Warnung für manche Profile)
+            # Negative Werte prüfen
             if timeseries_df[col].min() < 0 and not col.endswith('_demand'):
                 self.validation_warnings.append(f"Timeseries: Negative Werte in '{col}'")
             
@@ -460,21 +535,18 @@ class ExcelReader:
             # Zeitindex aus Zeitreihen-Daten
             timeseries_df = self.excel_data['timeseries']
             
-            # Sicherstellen, dass timestamp eine DatetimeIndex ist
             if 'timestamp' in timeseries_df.columns:
                 timestamps = pd.to_datetime(timeseries_df['timestamp'])
                 
-                # Als DatetimeIndex erstellen, nicht als Series
                 if isinstance(timestamps, pd.Series):
                     timeindex = pd.DatetimeIndex(timestamps)
                 else:
                     timeindex = timestamps
                 
-                # Frequenz ermitteln und explizit setzen
+                # Frequenz ermitteln
                 freq = timeindex.inferred_freq or pd.infer_freq(timeindex)
                 
                 if freq is None:
-                    # Frequenz aus den ersten zwei Zeitpunkten ableiten
                     if len(timeindex) >= 2:
                         time_diff = timeindex[1] - timeindex[0]
                         if time_diff == pd.Timedelta(hours=1):
@@ -485,19 +557,7 @@ class ExcelReader:
                             freq = '30min'
                         elif time_diff == pd.Timedelta(days=1):
                             freq = 'D'
-                        else:
-                            # Fallback: Versuche die Frequenz aus der Zeitdifferenz zu bestimmen
-                            total_seconds = time_diff.total_seconds()
-                            if total_seconds == 3600:  # 1 Stunde
-                                freq = 'h'
-                            elif total_seconds == 900:  # 15 Minuten
-                                freq = '15min'
-                            elif total_seconds == 1800:  # 30 Minuten
-                                freq = '30min'
-                            elif total_seconds == 86400:  # 1 Tag
-                                freq = 'D'
                 
-                # DatetimeIndex mit expliziter Frequenz neu erstellen
                 if freq is not None:
                     try:
                         timeindex = pd.date_range(
@@ -506,7 +566,6 @@ class ExcelReader:
                             freq=freq
                         )
                     except Exception:
-                        # Fallback: Originaler Index ohne Frequenz
                         freq = None
                 
                 self.excel_data['timeindex'] = timeindex
@@ -520,10 +579,8 @@ class ExcelReader:
                 
                 if freq is None:
                     self.validation_warnings.append(
-                        "Zeitindex-Frequenz konnte nicht ermittelt werden - "
-                        "infer_last_interval wird auf False gesetzt"
+                        "Zeitindex-Frequenz konnte nicht ermittelt werden"
                     )
-                
             else:
                 raise ValueError("Timeseries Sheet hat keine 'timestamp' Spalte")
             
@@ -552,7 +609,7 @@ class ExcelReader:
                 self.validation_warnings.append(f"Settings: Fehler beim Erstellen des Zeitindex: {e}")
         
         else:
-            # Standard-Zeitindex (1 Jahr, stündlich)
+            # Standard-Zeitindex
             timeindex = pd.date_range(start='2025-01-01', periods=8760, freq='h')
             
             self.excel_data['timeindex'] = timeindex
@@ -565,6 +622,118 @@ class ExcelReader:
             }
             
             self.validation_warnings.append("Kein Zeitindex definiert - verwende Standard (8760h)")
+    
+    def process_excel_data(self, file_path: Path) -> Dict[str, Any]:
+        """Hauptfunktion: Excel einlesen + Timestep-Management anwenden."""
+        
+        # Standard Excel-Einlesen
+        excel_data = self.read_project_file(file_path)
+        
+        # Timestep-Management anwenden (falls konfiguriert)
+        excel_data = self.apply_timestep_management(excel_data)
+        
+        return excel_data
+
+    def apply_timestep_management(self, excel_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Wendet Timestep-Management auf Excel-Daten an."""
+        
+        # Prüfe ob Timestep-Settings verfügbar sind
+        if 'timestep_settings' not in excel_data:
+            self.logger.debug("Kein timestep_settings Sheet gefunden - Timestep-Management übersprungen")
+            return excel_data
+        
+        settings_df = excel_data.get('timestep_settings')
+        
+        if settings_df is None or settings_df.empty:
+            self.logger.debug("timestep_settings Sheet ist leer - Timestep-Management übersprungen")
+            return excel_data
+        
+        # Parse Timestep-Einstellungen - ROBUSTERE METHODE
+        timestep_params = {}
+        try:
+            # Prüfe verschiedene mögliche Spaltenstrukturen
+            if 'Parameter' in settings_df.columns and 'Value' in settings_df.columns:
+                # Standard-Format: Parameter | Value
+                for _, row in settings_df.iterrows():
+                    param = row.get('Parameter')
+                    value = row.get('Value')
+                    
+                    if pd.notna(param) and pd.notna(value):
+                        timestep_params[str(param).strip()] = value
+                        
+            elif len(settings_df.columns) >= 2:
+                # Fallback: Erste zwei Spalten als Parameter/Value interpretieren
+                param_col = settings_df.columns[0]
+                value_col = settings_df.columns[1]
+                
+                for _, row in settings_df.iterrows():
+                    param = row.get(param_col)
+                    value = row.get(value_col)
+                    
+                    if pd.notna(param) and pd.notna(value):
+                        timestep_params[str(param).strip()] = value
+            else:
+                self.logger.warning("Timestep-Settings haben unerkannte Struktur")
+                return excel_data
+                
+        except Exception as e:
+            self.logger.warning(f"Fehler beim Parsen der Timestep-Einstellungen: {e}")
+            return excel_data
+        
+        self.logger.info(f"🕒 Gefundene Timestep-Parameter: {list(timestep_params.keys())}")
+        
+        # Prüfe ob aktiviert - MEHRERE MÖGLICHE WERTE
+        enabled_value = timestep_params.get('enabled', 'false')
+        enabled_variants = ['true', '1', 'yes', 'ja', 'on', 'aktiv', 'enabled']
+        
+        if str(enabled_value).lower().strip() not in enabled_variants:
+            self.logger.info(f"🕒 Timestep-Management nicht aktiviert (enabled = '{enabled_value}')")
+            return excel_data
+        
+        # Timestep-Manager importieren
+        try:
+            from modules.timestep_manager import TimestepManager
+            
+            timestep_manager = TimestepManager(self.settings)
+            
+            # Strategie und Parameter bestimmen
+            strategy = timestep_params.get('timestep_strategy', 'full')
+            
+            # Parameter für die gewählte Strategie sammeln
+            strategy_params = {}
+            
+            if strategy == 'time_range':
+                strategy_params['start_date'] = timestep_params.get('start_date')
+                strategy_params['end_date'] = timestep_params.get('end_date')
+            elif strategy == 'averaging':
+                strategy_params['hours'] = int(timestep_params.get('hours', 4))
+            elif strategy == 'sampling_24n':
+                strategy_params['n'] = float(timestep_params.get('n', 1))
+            
+            # Timestep-Management anwenden
+            self.logger.info(f"🕒 Wende Timestep-Management an: Strategie '{strategy}'")
+            
+            processed_data = timestep_manager.process_timeindex_and_data(
+                excel_data, strategy, strategy_params
+            )
+            
+            # Statistiken zu Excel-Daten hinzufügen
+            processed_data['timestep_reduction_stats'] = timestep_manager.get_reduction_stats()
+            processed_data['solver_time_estimate'] = timestep_manager.estimate_solver_time_reduction()
+            
+            self.logger.info("✅ Timestep-Management erfolgreich angewendet")
+            
+            return processed_data
+            
+        except ImportError as e:
+            self.logger.warning(f"TimestepManager konnte nicht importiert werden: {e}")
+            return excel_data
+        except Exception as e:
+            self.logger.warning(f"⚠️  Timestep-Management fehlgeschlagen: {e}")
+            if self.settings.get('debug_mode', False):
+                import traceback
+                traceback.print_exc()
+            return excel_data
     
     def get_data_summary(self, data: Dict[str, Any]) -> Dict[str, str]:
         """
@@ -604,123 +773,133 @@ class ExcelReader:
             profile_count = len(data['timeseries'].columns) - 1  # -1 für timestamp
             summary['Profile'] = f"{profile_count} Zeitreihen"
         
+        # Timestep-Reduktion (falls angewendet)
+        if 'timestep_reduction_stats' in data:
+            stats = data['timestep_reduction_stats']
+            summary['Zeitreduktion'] = f"{stats.get('time_savings', '0%')}"
+        
         return summary
-    
-    def process_excel_data(self, file_path: Path) -> Dict[str, Any]:
-        """Hauptfunktion: Excel einlesen + Timestep-Management anwenden."""
-        
-        # Standard Excel-Einlesen
-        excel_data = self.read_project_file(file_path)
-        
-        # Timestep-Management anwenden (falls konfiguriert)
-        excel_data = self.apply_timestep_management(excel_data)
-        
-        return excel_data
 
-    def apply_timestep_management(self, excel_data: Dict[str, Any]) -> Dict[str, Any]:
-            """Wendet Timestep-Management auf Excel-Daten an."""
-            
-            # Prüfe ob Timestep-Settings verfügbar sind
-            if 'timestep_settings' not in excel_data:
-                self.logger.debug("Kein timestep_settings Sheet gefunden - Timestep-Management übersprungen")
-                return excel_data
-            
-            settings_df = excel_data.get('timestep_settings')
-            
-            if settings_df is None or settings_df.empty:
-                self.logger.debug("timestep_settings Sheet ist leer - Timestep-Management übersprungen")
-                return excel_data
-            
-            # Parse Timestep-Einstellungen
-            timestep_params = {}
-            try:
-                for _, row in settings_df.iterrows():
-                    param = row.get('Parameter')
-                    value = row.get('Value')
-                    
-                    if param is None or value is None:
-                        continue
-                        
-                    if param == 'enabled' and str(value).lower() != 'true':
-                        self.logger.debug("Timestep-Management ist deaktiviert")
-                        return excel_data
-                    
-                    timestep_params[param] = value
-            except Exception as e:
-                self.logger.warning(f"Fehler beim Parsen der Timestep-Einstellungen: {e}")
-                return excel_data
-            
-            # Nur wenn explizit aktiviert
-            if not timestep_params.get('enabled') or str(timestep_params.get('enabled')).lower() != 'true':
-                self.logger.debug("Timestep-Management nicht aktiviert")
-                return excel_data
-            
-            # Timestep-Manager importieren
-            try:
-                from modules.timestep_manager import TimestepManager
-                
-                timestep_manager = TimestepManager(self.settings)
-                
-                # Strategie und Parameter bestimmen
-                strategy = timestep_params.get('timestep_strategy', 'full')
-                
-                # Für den Test nur 'full' Strategie unterstützen
-                if strategy != 'full':
-                    self.logger.warning(f"Strategie '{strategy}' noch nicht implementiert - verwende 'full'")
-                    strategy = 'full'
-                
-                # Timestep-Management anwenden
-                self.logger.info(f"🕒 Wende Timestep-Management an: Strategie '{strategy}'")
-                
-                processed_data = timestep_manager.process_timeindex_and_data(
-                    excel_data, strategy, {}
-                )
-                
-                # Statistiken zu Excel-Daten hinzufügen
-                processed_data['timestep_reduction_stats'] = timestep_manager.get_reduction_stats()
-                processed_data['solver_time_estimate'] = timestep_manager.estimate_solver_time_reduction()
-                
-                self.logger.info("✅ Timestep-Management erfolgreich angewendet")
-                
-                return processed_data
-                
-            except ImportError as e:
-                self.logger.warning(f"TimestepManager konnte nicht importiert werden: {e}")
-                return excel_data
-            except Exception as e:
-                self.logger.warning(f"⚠️  Timestep-Management fehlgeschlagen: {e}")
-                if self.settings.get('debug_mode', False):
-                    import traceback
-                    traceback.print_exc()
-                return excel_data
+
+# Test-Funktionen für Entwicklung
+def test_excel_reader():
+    """Testfunktion für den Excel-Reader."""
+    from pathlib import Path
     
-    # Test-Funktionen für Entwicklung
-    def test_excel_reader():
-        """Testfunktion für den Excel-Reader."""
-        from pathlib import Path
+    # Test mit Beispieldatei
+    example_file = Path("examples/example_1.xlsx")
+    
+    if example_file.exists():
+        settings = {'debug_mode': True}
+        reader = ExcelReader(settings)
         
-        # Test mit Beispieldatei
-        example_file = Path("examples/example_1.xlsx")
-        
-        if example_file.exists():
-            settings = {'debug_mode': True}
-            reader = ExcelReader(settings)
+        try:
+            data = reader.process_excel_data(example_file)
+            summary = reader.get_data_summary(data)
             
-            try:
-                data = reader.read_project_file(example_file)
-                summary = reader.get_data_summary(data)
+            print("✅ Test erfolgreich!")
+            print("Zusammenfassung:")
+            for key, value in summary.items():
+                print(f"  {key}: {value}")
                 
-                print("✅ Test erfolgreich!")
-                print("Zusammenfassung:")
-                for key, value in summary.items():
-                    print(f"  {key}: {value}")
-                    
-            except Exception as e:
-                print(f"❌ Test fehlgeschlagen: {e}")
-        else:
-            print(f"❌ Beispieldatei nicht gefunden: {example_file}")
+        except Exception as e:
+            print(f"❌ Test fehlgeschlagen: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print(f"❌ Beispieldatei nicht gefunden: {example_file}")
+
+
+def test_timestep_management():
+    """Spezifischer Test für Timestep-Management."""
+    import tempfile
+    import pandas as pd
+    
+    # Erstelle temporäre Excel-Datei mit timestep_settings
+    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp_file:
+        with pd.ExcelWriter(tmp_file.name, engine='openpyxl') as writer:
+            
+            # Basis-Komponenten
+            buses_df = pd.DataFrame({
+                'label': ['el_bus'],
+                'include': [1]
+            })
+            buses_df.to_excel(writer, sheet_name='buses', index=False)
+            
+            sources_df = pd.DataFrame({
+                'label': ['pv_plant'],
+                'include': [1],
+                'bus': ['el_bus'],
+                'nominal_capacity': [100]
+            })
+            sources_df.to_excel(writer, sheet_name='sources', index=False)
+            
+            sinks_df = pd.DataFrame({
+                'label': ['el_load'],
+                'include': [1],
+                'bus': ['el_bus']
+            })
+            sinks_df.to_excel(writer, sheet_name='sinks', index=False)
+            
+            transformers_df = pd.DataFrame({
+                'label': ['dummy_transformer'],
+                'include': [0],  # Deaktiviert
+                'input_bus': ['el_bus'],
+                'output_bus': ['el_bus'],
+                'conversion_factor': [1.0]
+            })
+            transformers_df.to_excel(writer, sheet_name='simple_transformers', index=False)
+            
+            # Zeitreihen
+            timestamps = pd.date_range('2025-01-01', periods=168, freq='h')  # 1 Woche
+            timeseries_df = pd.DataFrame({
+                'timestamp': timestamps,
+                'pv_profile': [0.5 + 0.5 * np.sin(i * 2 * np.pi / 24) for i in range(168)]
+            })
+            timeseries_df.to_excel(writer, sheet_name='timeseries', index=False)
+            
+            # Timestep-Settings - VERSCHIEDENE TEST-SZENARIEN
+            timestep_df = pd.DataFrame({
+                'Parameter': ['enabled', 'timestep_strategy', 'hours'],
+                'Value': ['true', 'averaging', 4]
+            })
+            timestep_df.to_excel(writer, sheet_name='timestep_settings', index=False)
+        
+        # Test durchführen
+        settings = {'debug_mode': True}
+        reader = ExcelReader(settings)
+        
+        try:
+            print("🧪 Teste Timestep-Management...")
+            data = reader.process_excel_data(Path(tmp_file.name))
+            
+            original_periods = 168
+            final_periods = data['timeindex_info']['periods']
+            
+            print(f"✅ Test erfolgreich!")
+            print(f"Original-Zeitschritte: {original_periods}")
+            print(f"Final-Zeitschritte: {final_periods}")
+            print(f"Reduktion: {((original_periods - final_periods) / original_periods * 100):.1f}%")
+            
+            if 'timestep_reduction_stats' in data:
+                stats = data['timestep_reduction_stats']
+                print(f"Strategie: {stats['strategy']}")
+                print(f"Zeitersparnis: {stats['time_savings']}")
+            
+        except Exception as e:
+            print(f"❌ Test fehlgeschlagen: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            # Temporäre Datei löschen
+            import os
+            os.unlink(tmp_file.name)
 
 
 if __name__ == "__main__":
-    # Test ausführen wenn direkt gestartet
+    print("Excel Reader Tests")
+    print("=" * 50)
     test_excel_reader()
+    print("\nTimestep Management Tests")
+    print("=" * 50)
+    test_timestep_management()
