@@ -634,8 +634,11 @@ class ExcelReader:
         
         return excel_data
 
+# Korrigierte apply_timestep_management Methode in excel_reader.py
+# Ersetzen Sie diese Methode in Ihrer excel_reader.py:
+
     def apply_timestep_management(self, excel_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Wendet Timestep-Management auf Excel-Daten an."""
+        """Wendet Timestep-Management auf Excel-Daten an und erstellt Visualisierung."""
         
         # Prüfe ob Timestep-Settings verfügbar sind
         if 'timestep_settings' not in excel_data:
@@ -648,12 +651,10 @@ class ExcelReader:
             self.logger.debug("timestep_settings Sheet ist leer - Timestep-Management übersprungen")
             return excel_data
         
-        # Parse Timestep-Einstellungen - ROBUSTERE METHODE
+        # Parse Timestep-Einstellungen
         timestep_params = {}
         try:
-            # Prüfe verschiedene mögliche Spaltenstrukturen
             if 'Parameter' in settings_df.columns and 'Value' in settings_df.columns:
-                # Standard-Format: Parameter | Value
                 for _, row in settings_df.iterrows():
                     param = row.get('Parameter')
                     value = row.get('Value')
@@ -662,7 +663,6 @@ class ExcelReader:
                         timestep_params[str(param).strip()] = value
                         
             elif len(settings_df.columns) >= 2:
-                # Fallback: Erste zwei Spalten als Parameter/Value interpretieren
                 param_col = settings_df.columns[0]
                 value_col = settings_df.columns[1]
                 
@@ -682,7 +682,7 @@ class ExcelReader:
         
         self.logger.info(f"🕒 Gefundene Timestep-Parameter: {list(timestep_params.keys())}")
         
-        # Prüfe ob aktiviert - MEHRERE MÖGLICHE WERTE
+        # Prüfe ob aktiviert
         enabled_value = timestep_params.get('enabled', 'false')
         enabled_variants = ['true', '1', 'yes', 'ja', 'on', 'aktiv', 'enabled']
         
@@ -690,7 +690,14 @@ class ExcelReader:
             self.logger.info(f"🕒 Timestep-Management nicht aktiviert (enabled = '{enabled_value}')")
             return excel_data
         
-        # Timestep-Manager importieren
+        # ** ORIGINAL DATEN FÜR VERGLEICH SICHERN **
+        original_data_for_comparison = {
+            'timeindex': excel_data.get('timeindex'),
+            'timeseries': excel_data.get('timeseries'),
+            'timeindex_info': excel_data.get('timeindex_info')
+        }
+        
+        # Timestep-Manager importieren und anwenden
         try:
             from modules.timestep_manager import TimestepManager
             
@@ -699,16 +706,34 @@ class ExcelReader:
             # Strategie und Parameter bestimmen
             strategy = timestep_params.get('timestep_strategy', 'full')
             
-            # Parameter für die gewählte Strategie sammeln
+            # Parameter-Zuordnung
             strategy_params = {}
             
             if strategy == 'time_range':
-                strategy_params['start_date'] = timestep_params.get('start_date')
-                strategy_params['end_date'] = timestep_params.get('end_date')
+                strategy_params['start_date'] = timestep_params.get('time_range_start')
+                strategy_params['end_date'] = timestep_params.get('time_range_end')
+                
+                if not strategy_params['start_date'] or not strategy_params['end_date']:
+                    self.logger.warning("time_range Strategie benötigt 'time_range_start' und 'time_range_end' Parameter")
+                    return excel_data
+                    
             elif strategy == 'averaging':
-                strategy_params['hours'] = int(timestep_params.get('hours', 4))
+                averaging_hours = timestep_params.get('averaging_hours', 4)
+                try:
+                    strategy_params['hours'] = int(averaging_hours)
+                except (ValueError, TypeError):
+                    self.logger.warning(f"Ungültiger averaging_hours Wert: {averaging_hours}, verwende 4")
+                    strategy_params['hours'] = 4
+                    
             elif strategy == 'sampling_24n':
-                strategy_params['n'] = float(timestep_params.get('n', 1))
+                sampling_n = timestep_params.get('sampling_n_factor', 1)
+                try:
+                    strategy_params['n'] = float(sampling_n)
+                except (ValueError, TypeError):
+                    self.logger.warning(f"Ungültiger sampling_n_factor Wert: {sampling_n}, verwende 1.0")
+                    strategy_params['n'] = 1.0
+            
+            self.logger.info(f"🕒 Strategie '{strategy}' mit Parametern: {strategy_params}")
             
             # Timestep-Management anwenden
             self.logger.info(f"🕒 Wende Timestep-Management an: Strategie '{strategy}'")
@@ -720,6 +745,61 @@ class ExcelReader:
             # Statistiken zu Excel-Daten hinzufügen
             processed_data['timestep_reduction_stats'] = timestep_manager.get_reduction_stats()
             processed_data['solver_time_estimate'] = timestep_manager.estimate_solver_time_reduction()
+            
+            # ** TIMESTEP-VISUALISIERUNG ERSTELLEN **
+            # Prüfe ob Visualisierung gewünscht ist
+            create_viz = timestep_params.get('create_visualization', 'true')
+            viz_enabled = str(create_viz).lower().strip() in ['true', '1', 'yes', 'ja', 'on']
+            
+            if viz_enabled and strategy != 'full':
+                try:
+                    from modules.timestep_visualizer import TimestepVisualizer
+                    
+                    # ** KORRIGIERT: Output-Verzeichnis aus Settings bestimmen **
+                    # Das Hauptprogramm setzt das richtige output_dir in den Settings
+                    viz_output_dir = self.settings.get('output_dir', Path('.'))
+                    if isinstance(viz_output_dir, str):
+                        viz_output_dir = Path(viz_output_dir)
+                    
+                    # Falls output_dir nicht gesetzt ist, versuche es aus project_name zu erstellen
+                    if not viz_output_dir or viz_output_dir == Path('.'):
+                        project_name = self.settings.get('project_name', 'default')
+                        base_output = self.settings.get('base_output_dir', Path('./data/output'))
+                        viz_output_dir = Path(base_output) / project_name
+                        viz_output_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    self.logger.debug(f"🕒 Timestep-Visualisierung Output-Verzeichnis: {viz_output_dir}")
+                    
+                    # Timestep-Visualizer erstellen
+                    timestep_viz = TimestepVisualizer(viz_output_dir, self.settings)
+                    
+                    if timestep_viz.is_available():
+                        self.logger.info("📊 Erstelle Timestep-Management Visualisierung...")
+                        
+                        viz_files = timestep_viz.create_timestep_comparison(
+                            original_data_for_comparison, processed_data
+                        )
+                        
+                        if viz_files:
+                            # Dateiliste zu processed_data hinzufügen
+                            processed_data['timestep_visualization_files'] = [str(f) for f in viz_files]
+                            self.logger.info(f"✅ {len(viz_files)} Timestep-Visualisierungen erstellt in: {viz_output_dir}")
+                            
+                            # Debug: Einzelne Dateien loggen
+                            for viz_file in viz_files:
+                                self.logger.debug(f"      📊 {Path(viz_file).name}")
+                        else:
+                            self.logger.info("📊 Keine Timestep-Visualisierungen erstellt")
+                    else:
+                        self.logger.info("📊 Timestep-Visualisierung übersprungen (Matplotlib fehlt)")
+                        
+                except ImportError:
+                    self.logger.info("📊 TimestepVisualizer nicht verfügbar")
+                except Exception as e:
+                    self.logger.warning(f"⚠️  Timestep-Visualisierung fehlgeschlagen: {e}")
+                    if self.settings.get('debug_mode', False):
+                        import traceback
+                        traceback.print_exc()
             
             self.logger.info("✅ Timestep-Management erfolgreich angewendet")
             
@@ -733,8 +813,8 @@ class ExcelReader:
             if self.settings.get('debug_mode', False):
                 import traceback
                 traceback.print_exc()
-            return excel_data
-    
+            return excel_data    
+        
     def get_data_summary(self, data: Dict[str, Any]) -> Dict[str, str]:
         """
         Erstellt eine Zusammenfassung der eingelesenen Daten.

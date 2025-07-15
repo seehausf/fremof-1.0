@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-oemof.solph 0.6.0 Timestep-Management-Modul (Kompakte Version)
-============================================================
+oemof.solph 0.6.0 Timestep-Management-Modul (Korrigiert)
+=======================================================
 
 Ermöglicht flexibles Management der Zeitauflösung für Optimierungsmodelle.
 Unterstützt Zeitbereich-Auswahl, Mittelwertbildung und Sampling-Strategien.
 
+KORRIGIERT: Verbesserte Zeitindex-Validierung für robustere Funktionalität.
+
 Autor: [Ihr Name]
 Datum: Juli 2025
-Version: 1.0.0
+Version: 1.0.1
 """
 
 import pandas as pd
@@ -119,7 +121,7 @@ class TimestepManager:
             
             # Timestamp-Spalte anpassen 
             if 'timestamp' in timeseries_df.columns:
-                ts_mask = (timeseries_df['timestamp'] >= start_ts) & (timeseries_df['timestamp'] < end_ts)
+                ts_mask = (timeseries_df['timestamp'] >= start_ts) & (timeseries_df['timestamp'] <= end_ts)
                 timeseries_df = timeseries_df[ts_mask].reset_index(drop=True)
                 processed_data['timeseries'] = timeseries_df
         
@@ -160,9 +162,9 @@ class TimestepManager:
         if original_timeindex is None:
             raise ValueError("Kein Zeitindex in Excel-Daten gefunden")
         
-        # Prüfe ob Zeitindex stündlich ist
-        if not self._is_hourly_timeindex(original_timeindex):
-            raise ValueError("Averaging-Strategie benötigt stündlichen Zeitindex")
+        # Prüfe ob Zeitindex grob stündlich ist (VERBESSERTE VALIDIERUNG)
+        if not self._is_roughly_hourly_timeindex(original_timeindex):
+            raise ValueError(f"Averaging-Strategie benötigt (grob) stündlichen Zeitindex. Erkannter Zeitindex: {self._describe_timeindex(original_timeindex)}")
         
         processed_data = excel_data.copy()
         
@@ -224,9 +226,9 @@ class TimestepManager:
         if original_timeindex is None:
             raise ValueError("Kein Zeitindex in Excel-Daten gefunden")
         
-        # Prüfe ob Zeitindex stündlich ist
-        if not self._is_hourly_timeindex(original_timeindex):
-            raise ValueError("24n+1 Sampling benötigt stündlichen Zeitindex")
+        # VERBESSERTE ZEITINDEX-VALIDIERUNG
+        if not self._is_roughly_hourly_timeindex(original_timeindex):
+            raise ValueError(f"24n+1 Sampling benötigt (grob) stündlichen Zeitindex. Erkannter Zeitindex: {self._describe_timeindex(original_timeindex)}")
         
         processed_data = excel_data.copy()
         
@@ -268,15 +270,109 @@ class TimestepManager:
         
         return processed_data
     
-    def _is_hourly_timeindex(self, timeindex: pd.DatetimeIndex) -> bool:
-        """Prüft ob ein Zeitindex stündlich ist."""
+    def _is_roughly_hourly_timeindex(self, timeindex: pd.DatetimeIndex) -> bool:
+        """
+        Prüft ob ein Zeitindex grob stündlich ist (VERBESSERTE VERSION).
+        
+        Toleriert kleine Abweichungen und verschiedene Stunden-basierte Frequenzen.
+        """
         try:
+            if len(timeindex) < 2:
+                return False
+            
+            # Erste Methode: Pandas freq
             freq = timeindex.freq
             if freq is None:
                 freq = pd.infer_freq(timeindex)
-            return freq is not None and 'h' in str(freq) and '1h' in str(freq)
-        except:
+            
+            if freq is not None:
+                freq_str = str(freq).lower()
+                # Alle stunden-basierten Frequenzen akzeptieren
+                if 'h' in freq_str or 'hour' in freq_str:
+                    self.logger.debug(f"Zeitindex-Frequenz erkannt: {freq}")
+                    return True
+            
+            # Zweite Methode: Zeitdifferenzen analysieren
+            time_diffs = timeindex.to_series().diff().dropna()
+            
+            if len(time_diffs) == 0:
+                return False
+            
+            # Häufigste Zeitdifferenz ermitteln
+            most_common_diff = time_diffs.mode()
+            
+            if len(most_common_diff) > 0:
+                diff_seconds = most_common_diff.iloc[0].total_seconds()
+                
+                # Stunden-basierte Intervalle (mit Toleranz)
+                hour_multiples = [3600, 7200, 10800, 14400, 21600, 28800, 43200, 86400]  # 1h, 2h, 3h, 4h, 6h, 8h, 12h, 24h
+                
+                for hour_mult in hour_multiples:
+                    if abs(diff_seconds - hour_mult) < 300:  # 5 Minuten Toleranz
+                        self.logger.debug(f"Stunden-basiertes Intervall erkannt: {diff_seconds/3600:.2f} Stunden")
+                        return True
+            
+            # Dritte Methode: Prüfe ob die meisten Differenzen stunden-basiert sind
+            diff_seconds_series = time_diffs.dt.total_seconds()
+            
+            # Zähle wie viele Differenzen "stunden-ähnlich" sind
+            hourly_count = 0
+            total_count = len(diff_seconds_series)
+            
+            for diff_sec in diff_seconds_series:
+                for hour_mult in [3600, 7200, 10800, 14400, 21600, 28800, 43200, 86400]:
+                    if abs(diff_sec - hour_mult) < 600:  # 10 Minuten Toleranz
+                        hourly_count += 1
+                        break
+            
+            hourly_ratio = hourly_count / total_count if total_count > 0 else 0
+            
+            if hourly_ratio >= 0.8:  # 80% der Zeitschritte sind stunden-basiert
+                self.logger.debug(f"Zeitindex ist zu {hourly_ratio*100:.1f}% stunden-basiert")
+                return True
+            
+            self.logger.debug(f"Zeitindex ist nur zu {hourly_ratio*100:.1f}% stunden-basiert (< 80%)")
             return False
+            
+        except Exception as e:
+            self.logger.warning(f"Fehler bei Zeitindex-Validierung: {e}")
+            return False
+    
+    def _describe_timeindex(self, timeindex: pd.DatetimeIndex) -> str:
+        """Beschreibt einen Zeitindex für Fehlermeldungen."""
+        try:
+            if len(timeindex) < 2:
+                return f"Nur {len(timeindex)} Zeitpunkt(e)"
+            
+            # Zeitdifferenzen analysieren
+            time_diffs = timeindex.to_series().diff().dropna()
+            
+            if len(time_diffs) == 0:
+                return "Keine Zeitdifferenzen berechenbar"
+            
+            # Häufigste Zeitdifferenz
+            most_common_diff = time_diffs.mode()
+            
+            if len(most_common_diff) > 0:
+                diff_seconds = most_common_diff.iloc[0].total_seconds()
+                
+                if diff_seconds < 60:
+                    return f"{diff_seconds:.0f} Sekunden Intervall"
+                elif diff_seconds < 3600:
+                    return f"{diff_seconds/60:.0f} Minuten Intervall"
+                elif diff_seconds < 86400:
+                    return f"{diff_seconds/3600:.1f} Stunden Intervall"
+                else:
+                    return f"{diff_seconds/86400:.1f} Tage Intervall"
+            
+            return "Unregelmäßiger Zeitindex"
+            
+        except Exception:
+            return "Zeitindex-Analyse fehlgeschlagen"
+    
+    def _is_hourly_timeindex(self, timeindex: pd.DatetimeIndex) -> bool:
+        """DEPRECATED: Verwende _is_roughly_hourly_timeindex stattdessen."""
+        return self._is_roughly_hourly_timeindex(timeindex)
     
     def _average_timeseries(self, timeseries_df: pd.DataFrame, hours: int) -> pd.DataFrame:
         """Mittelt Zeitreihen-Daten über gegebene Stunden-Intervalle."""
@@ -398,3 +494,37 @@ class TimestepManager:
             'estimated_time_savings': f"{((1 - estimated_time_factor) * 100):.1f}%",
             'complexity_reduction': 'quadratic' if reduction_factor < 0.5 else 'linear'
         }
+
+
+# Test-Funktion
+def test_timeindex_validation():
+    """Testet die verbesserte Zeitindex-Validierung."""
+    
+    print("🧪 Teste verbesserte Zeitindex-Validierung...")
+    
+    manager = TimestepManager({'debug_mode': True})
+    
+    # Test 1: Perfekter stündlicher Index
+    hourly_index = pd.date_range('2025-01-01', periods=24, freq='h')
+    print(f"Test 1 - Stündlich: {manager._is_roughly_hourly_timeindex(hourly_index)}")
+    
+    # Test 2: 4-Stunden Index  
+    four_hourly_index = pd.date_range('2025-01-01', periods=24, freq='4h')
+    print(f"Test 2 - 4-Stündlich: {manager._is_roughly_hourly_timeindex(four_hourly_index)}")
+    
+    # Test 3: Minutenweise (sollte False sein)
+    minute_index = pd.date_range('2025-01-01', periods=60, freq='1min')
+    print(f"Test 3 - Minutenweise: {manager._is_roughly_hourly_timeindex(minute_index)}")
+    
+    # Test 4: Unregelmäßiger aber grob stündlicher Index
+    irregular_hourly = pd.to_datetime([
+        '2025-01-01 00:00', '2025-01-01 01:00', '2025-01-01 02:00', 
+        '2025-01-01 03:05', '2025-01-01 04:00', '2025-01-01 05:00'
+    ])
+    print(f"Test 4 - Unregelmäßig stündlich: {manager._is_roughly_hourly_timeindex(irregular_hourly)}")
+    
+    print("✅ Zeitindex-Validierung getestet")
+
+
+if __name__ == "__main__":
+    test_timeindex_validation()
