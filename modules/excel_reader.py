@@ -258,13 +258,18 @@ class ExcelReader:
         self.valid_bus_labels = set(active_buses['label'].values)
     
     def _validate_sources(self):
-        """Validiert die Source-Definitionen."""
+        """Validiert die Source-Definitionen mit neuer Investment-Logik."""
         if 'sources' not in self.excel_data:
             self.validation_errors.append("Sources Sheet fehlt")
             return
         
         sources_df = self.excel_data['sources']
-        required_cols = ['label', 'include', 'bus']
+        required_cols = ['label', 'include', 'bus', 'existing']  # GEÄNDERT: nominal_capacity → existing
+        
+        # Optional: investment Spalte
+        if 'investment' not in sources_df.columns:
+            self.validation_warnings.append("Sources: Keine 'investment' Spalte gefunden - Investment deaktiviert")
+            sources_df['investment'] = 0  # Default: kein Investment
         
         # Erforderliche Spalten prüfen
         missing_cols = [col for col in required_cols if col not in sources_df.columns]
@@ -275,7 +280,7 @@ class ExcelReader:
         # Nur aktive Sources berücksichtigen
         active_sources = sources_df[sources_df['include'] == 1]
         
-        # Bus-Referenzen prüfen
+        # Bus-Referenzen prüfen (unverändert)
         invalid_buses = []
         for _, source in active_sources.iterrows():
             if hasattr(self, 'valid_bus_labels') and source['bus'] not in self.valid_bus_labels:
@@ -284,17 +289,25 @@ class ExcelReader:
         if invalid_buses:
             self.validation_errors.append(f"Sources: Ungültige Bus-Referenzen: {invalid_buses}")
         
-        # Investment-Parameter prüfen
-        self._validate_investment_parameters(active_sources, 'Sources')
+        # NEUE Investment-Validierung
+        self._validate_investment_logic(active_sources, 'Sources')
     
     def _validate_sinks(self):
-        """Validiert die Sink-Definitionen."""
+        """Validiert die Sink-Definitionen mit neuer Investment-Logik."""
         if 'sinks' not in self.excel_data:
             self.validation_errors.append("Sinks Sheet fehlt")
             return
         
         sinks_df = self.excel_data['sinks']
         required_cols = ['label', 'include', 'bus']
+        
+        # GEÄNDERT: existing Spalte ist optional für Sinks
+        if 'existing' not in sinks_df.columns:
+            sinks_df['existing'] = None  # Sinks können ohne existing auskommen
+        
+        # Optional: investment Spalte
+        if 'investment' not in sinks_df.columns:
+            sinks_df['investment'] = 0  # Default: kein Investment
         
         # Erforderliche Spalten prüfen
         missing_cols = [col for col in required_cols if col not in sinks_df.columns]
@@ -305,7 +318,7 @@ class ExcelReader:
         # Nur aktive Sinks berücksichtigen
         active_sinks = sinks_df[sinks_df['include'] == 1]
         
-        # Bus-Referenzen prüfen
+        # Bus-Referenzen prüfen (unverändert)
         invalid_buses = []
         for _, sink in active_sinks.iterrows():
             if hasattr(self, 'valid_bus_labels') and sink['bus'] not in self.valid_bus_labels:
@@ -313,9 +326,12 @@ class ExcelReader:
         
         if invalid_buses:
             self.validation_errors.append(f"Sinks: Ungültige Bus-Referenzen: {invalid_buses}")
+        
+        # NEUE Investment-Validierung für Sinks
+        self._validate_investment_logic(active_sinks, 'Sinks')
     
     def _validate_simple_transformers(self):
-        """Validiert die Simple Transformer-Definitionen."""
+        """Validiert die Simple Transformer-Definitionen mit neuer Investment-Logik."""
         if 'simple_transformers' not in self.excel_data:
             return  # Optional
         
@@ -326,6 +342,14 @@ class ExcelReader:
         
         required_cols = ['label', 'include', 'input_bus', 'output_bus', 'conversion_factor']
         
+        # GEÄNDERT: existing statt nominal_capacity
+        if 'existing' not in transformers_df.columns:
+            transformers_df['existing'] = None  # Optional für Converter
+        
+        # Optional: investment Spalte
+        if 'investment' not in transformers_df.columns:
+            transformers_df['investment'] = 0  # Default: kein Investment
+        
         # Erforderliche Spalten prüfen
         missing_cols = [col for col in required_cols if col not in transformers_df.columns]
         if missing_cols:
@@ -335,7 +359,7 @@ class ExcelReader:
         # Nur aktive Transformers berücksichtigen
         active_transformers = transformers_df[transformers_df['include'] == 1]
         
-        # Bus-Referenzen prüfen
+        # Bus-Referenzen prüfen (unverändert)
         invalid_buses = []
         for _, transformer in active_transformers.iterrows():
             if hasattr(self, 'valid_bus_labels'):
@@ -347,14 +371,14 @@ class ExcelReader:
         if invalid_buses:
             self.validation_errors.append(f"Transformers: Ungültige Bus-Referenzen: {invalid_buses}")
         
-        # Conversion Factor prüfen
+        # Conversion Factor prüfen (unverändert)
         invalid_factors = []
         for _, transformer in active_transformers.iterrows():
             try:
                 factor = float(transformer['conversion_factor'])
-                if factor <= 0 or factor > 2:
+                if factor <= 0 or factor > 10:  # Erweitert auf 10 für Wärmepumpen
                     self.validation_warnings.append(
-                        f"Transformer '{transformer['label']}': Unplausible Conversion Factor {factor}"
+                        f"Transformer '{transformer['label']}': Ungewöhnlicher Conversion Factor {factor}"
                     )
             except (ValueError, TypeError):
                 invalid_factors.append(transformer['label'])
@@ -362,9 +386,122 @@ class ExcelReader:
         if invalid_factors:
             self.validation_errors.append(f"Transformers: Ungültige Conversion Factors: {invalid_factors}")
         
-        # Investment-Parameter prüfen
-        self._validate_investment_parameters(active_transformers, 'Transformers')
+        # NEUE Investment-Validierung für Transformers
+        self._validate_investment_logic(active_transformers, 'Transformers')
     
+    def _validate_investment_logic(self, df: pd.DataFrame, component_type: str):
+        """
+        ERWEITERT: Validiert die Investment-Logik inklusive Annuity-Parameter.
+        """
+        for _, comp in df.iterrows():
+            comp_name = comp['label']
+            investment_flag = comp.get('investment', 0)
+            existing_value = comp.get('existing')
+            
+            # Investment Flag validieren (unverändert)
+            try:
+                investment_flag = int(investment_flag)
+                if investment_flag not in [0, 1]:
+                    self.validation_errors.append(
+                        f"{component_type} '{comp_name}': Investment muss 0 oder 1 sein, nicht '{investment_flag}'"
+                    )
+                    continue
+            except (ValueError, TypeError):
+                self.validation_errors.append(
+                    f"{component_type} '{comp_name}': Investment muss numerisch sein (0/1)"
+                )
+                continue
+            
+            # Wenn Investment aktiviert (1)
+            if investment_flag == 1:
+                # NEUE ANNUITY-VALIDIERUNG
+                investment_costs = comp.get('investment_costs')
+                lifetime = comp.get('lifetime')
+                interest_rate = comp.get('interest_rate')
+                
+                # Prüfe ob investment_costs vorhanden
+                if pd.isna(investment_costs) or investment_costs == '':
+                    self.validation_errors.append(
+                        f"{component_type} '{comp_name}': Investment benötigt 'investment_costs'"
+                    )
+                    continue
+                
+                try:
+                    inv_costs = float(investment_costs)
+                    if inv_costs <= 0:
+                        self.validation_errors.append(
+                            f"{component_type} '{comp_name}': investment_costs muss > 0 sein"
+                        )
+                        continue
+                except (ValueError, TypeError):
+                    self.validation_errors.append(
+                        f"{component_type} '{comp_name}': Ungültige investment_costs"
+                    )
+                    continue
+                
+                # NEUE ANNUITY-PARAMETER VALIDIERUNG
+                has_lifetime = pd.notna(lifetime) and lifetime != ''
+                has_interest_rate = pd.notna(interest_rate) and interest_rate != ''
+                
+                if has_lifetime or has_interest_rate:
+                    # Wenn einer der Annuity-Parameter vorhanden ist, müssen beide da sein
+                    if not (has_lifetime and has_interest_rate):
+                        self.validation_errors.append(
+                            f"{component_type} '{comp_name}': Für Annuity-Berechnung sind "
+                            f"sowohl 'lifetime' als auch 'interest_rate' erforderlich"
+                        )
+                        continue
+                    
+                    # Lifetime validieren
+                    try:
+                        lifetime_val = float(lifetime)
+                        if lifetime_val <= 0 or lifetime_val > 50:
+                            self.validation_warnings.append(
+                                f"{component_type} '{comp_name}': Ungewöhnliche Lebensdauer {lifetime_val} Jahre"
+                            )
+                    except (ValueError, TypeError):
+                        self.validation_errors.append(
+                            f"{component_type} '{comp_name}': Ungültige lifetime"
+                        )
+                        continue
+                    
+                    # Interest rate validieren
+                    try:
+                        interest_val = float(interest_rate)
+                        if interest_val < 0 or interest_val > 0.5:  # 0-50%
+                            self.validation_warnings.append(
+                                f"{component_type} '{comp_name}': Ungewöhnlicher Zinssatz {interest_val*100:.1f}%"
+                            )
+                    except (ValueError, TypeError):
+                        self.validation_errors.append(
+                            f"{component_type} '{comp_name}': Ungültige interest_rate"
+                        )
+                        continue
+                    
+                    self.logger.debug(f"   Annuity-Parameter für {comp_name}: "
+                                    f"{lifetime_val}a, {interest_val*100:.1f}%")
+                
+                # Min/Max Investment prüfen (unverändert)
+                if 'invest_min' in df.columns and 'invest_max' in df.columns:
+                    try:
+                        min_val = float(comp.get('invest_min', 0))
+                        max_val = float(comp.get('invest_max', 1000))
+                        
+                        if min_val < 0:
+                            self.validation_errors.append(
+                                f"{component_type} '{comp_name}': Negativer Mindest-Investment"
+                            )
+                        
+                        if max_val <= min_val:
+                            self.validation_errors.append(
+                                f"{component_type} '{comp_name}': Max-Investment <= Min-Investment"
+                            )
+                            
+                    except (ValueError, TypeError):
+                        self.validation_errors.append(
+                            f"{component_type} '{comp_name}': Ungültige Investment-Grenzen"
+                        )           
+                        
     def _validate_investment_parameters(self, df: pd.DataFrame, component_type: str):
         """Validiert Investment-Parameter für Komponenten."""
         if 'nominal_capacity' not in df.columns:
@@ -463,25 +600,160 @@ class ExcelReader:
                 self.validation_warnings.append(f"Settings: Unbekannter Solver '{params['solver']}'")
     
     def _process_data(self):
-        """Bereitet die Daten für die weitere Verarbeitung auf."""
+        """Bereitet die Daten für die weitere Verarbeitung auf - ERWEITERT."""
         self.logger.info("🔧 Bereite Daten auf...")
         
-        # Nur aktive Komponenten behalten
+        # Nur aktive Komponenten behalten (unverändert)
         for sheet in ['buses', 'sources', 'sinks', 'simple_transformers']:
             if sheet in self.excel_data:
                 df = self.excel_data[sheet]
                 if 'include' in df.columns:
                     self.excel_data[sheet] = df[df['include'] == 1].copy()
         
-        # Investment-Parameter verarbeiten
-        self._process_investment_data()
+        # NEUE Investment-Datenverarbeitung
+        self._process_new_investment_data()
         
-        # Profile-Referenzen auflösen
+        # Profile-Referenzen auflösen (unverändert)
         self._process_profile_references()
         
-        # Zeitindex erstellen/validieren
+        # Zeitindex erstellen/validieren (unverändert)
         self._process_timeindex()
     
+    def _calculate_ep_costs(self, component_data: pd.Series) -> Optional[float]:
+        """
+        NEUE METHODE: Berechnet ep_costs entweder direkt oder über Annuity.
+        
+        Methode 1: Nur investment_costs
+        → ep_costs = investment_costs
+        
+        Methode 2: investment_costs + lifetime + interest_rate  
+        → ep_costs = Annuity = investment_costs * (r * (1+r)^n) / ((1+r)^n - 1)
+        
+        Args:
+            component_data: Pandas Series mit Komponentendaten
+            
+        Returns:
+            Berechnete ep_costs oder None bei Fehlern
+        """
+        investment_costs = component_data.get('investment_costs')
+        lifetime = component_data.get('lifetime')
+        interest_rate = component_data.get('interest_rate')
+        
+        # Investment_costs ist erforderlich
+        if pd.isna(investment_costs) or investment_costs == '':
+            return None
+        
+        try:
+            inv_costs = float(investment_costs)
+            if inv_costs <= 0:
+                return None
+        except (ValueError, TypeError):
+            return None
+        
+        # Prüfe ob Annuity-Parameter vorhanden sind
+        has_lifetime = pd.notna(lifetime) and lifetime != ''
+        has_interest_rate = pd.notna(interest_rate) and interest_rate != ''
+        
+        if has_lifetime and has_interest_rate:
+            # METHODE 2: Annuity-Berechnung
+            try:
+                lifetime_years = float(lifetime)
+                interest_rate_decimal = float(interest_rate)
+                
+                if lifetime_years <= 0 or interest_rate_decimal < 0:
+                    self.logger.warning("Ungültige Annuity-Parameter - verwende investment_costs direkt")
+                    return inv_costs
+                
+                # Spezialfall: Zinssatz = 0
+                if interest_rate_decimal == 0:
+                    annuity = inv_costs / lifetime_years
+                    self.logger.debug(f"Annuity (r=0): {annuity:.2f} €/kW/a "
+                                    f"(Investment: {inv_costs} €/kW, Lifetime: {lifetime_years}a)")
+                    return annuity
+                
+                # Standard Annuity-Formel: A = I * (r * (1+r)^n) / ((1+r)^n - 1)
+                r = interest_rate_decimal
+                n = lifetime_years
+                
+                numerator = r * ((1 + r) ** n)
+                denominator = ((1 + r) ** n) - 1
+                
+                if denominator == 0:
+                    self.logger.warning("Annuity-Berechnung: Division durch Null - verwende investment_costs direkt")
+                    return inv_costs
+                
+                annuity_factor = numerator / denominator
+                annuity = inv_costs * annuity_factor
+                
+                self.logger.debug(f"Annuity berechnet: {annuity:.2f} €/kW/a "
+                                f"(Investment: {inv_costs} €/kW, {lifetime_years}a, {interest_rate_decimal*100:.1f}%)")
+                
+                return annuity
+                
+            except (ValueError, TypeError, OverflowError) as e:
+                self.logger.warning(f"Fehler bei Annuity-Berechnung: {e} - verwende investment_costs direkt")
+                return inv_costs
+        
+        else:
+            # METHODE 1: Direkte investment_costs
+            self.logger.debug(f"Direkte ep_costs: {inv_costs} €/kW "
+                            f"(keine Annuity-Parameter vorhanden)")
+            return inv_costs
+    
+    def _process_new_investment_data(self):
+        """
+        ERWEITERT: Verarbeitet Investment-Definitionen mit Annuity-Support.
+        """
+        for sheet in ['sources', 'sinks', 'simple_transformers']:
+            if sheet not in self.excel_data:
+                continue
+            
+            df = self.excel_data[sheet]
+            
+            # Spalten hinzufügen falls nicht vorhanden
+            if 'investment' not in df.columns:
+                df['investment'] = 0
+            if 'existing' not in df.columns:
+                df['existing'] = None
+            
+            # NEUE ANNUITY-SPALTEN HINZUFÜGEN
+            annuity_cols = ['lifetime', 'interest_rate']
+            for col in annuity_cols:
+                if col not in df.columns:
+                    df[col] = None
+            
+            # Investment-Flags verarbeiten
+            df['is_investment'] = df['investment'].astype(int) == 1
+            
+            # Investment-Parameter standardisieren
+            investment_cols = ['investment_costs', 'invest_min', 'invest_max', 'lifetime', 'interest_rate']
+            for col in investment_cols:
+                if col not in df.columns:
+                    df[col] = np.nan
+                else:
+                    # Spezielle Behandlung für lifetime und interest_rate
+                    if col in ['lifetime', 'interest_rate']:
+                        # Konvertiere nur wenn nicht leer
+                        df[col] = df[col].apply(lambda x: np.nan if pd.isna(x) or x == '' else x)
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                    else:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # Existing-Werte standardisieren
+            df['existing'] = pd.to_numeric(df['existing'], errors='coerce')
+            
+            # Statistiken
+            investment_count = df['is_investment'].sum()
+            annuity_count = df[
+                df['is_investment'] & 
+                pd.notna(df['lifetime']) & 
+                pd.notna(df['interest_rate'])
+            ].shape[0]
+            
+            self.logger.debug(f"   Investment verarbeitet für {sheet}: "
+                             f"{investment_count} Investment-Komponenten, "
+                             f"{annuity_count} mit Annuity-Berechnung")    
+            
     def _process_investment_data(self):
         """Verarbeitet Investment-Definitionen."""
         for sheet in ['sources', 'sinks', 'simple_transformers']:

@@ -13,7 +13,7 @@ Version: 1.0.0
 
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Union
 import logging
 
 # oemof.solph 0.6.0 Imports
@@ -152,7 +152,7 @@ class SystemBuilder:
                 raise
     
     def _build_sources(self, excel_data: Dict[str, Any]):
-        """Erstellt alle Source-Objekte."""
+        """Erstellt alle Source-Objekte mit neuer Investment-Logik."""
         if 'sources' not in excel_data:
             self.logger.info("   ⏭️  Keine Sources definiert")
             return
@@ -173,30 +173,31 @@ class SystemBuilder:
                 
                 bus = self.bus_objects[bus_label]
                 
-                # Flow erstellen
-                flow = self._create_flow(source_data, timeseries_data, 'source')
+                # NEUE Investment-Logik: Flow erstellen
+                flow = self._create_investment_flow(source_data, timeseries_data, 'source')
                 
                 # Source erstellen
                 source = solph.components.Source(
                     label=label,
-                    outputs={bus: flow}
+                    outputs={bus: flow}  # Immer der erste (und einzige) Output-Flow
                 )
                 
                 self.component_objects[label] = source
                 self.build_stats['sources'] += 1
                 
-                # Investment statistik
+                # Investment-Statistik
                 if source_data.get('is_investment', False):
                     self.build_stats['investments'] += 1
-                
-                self.logger.debug(f"      ✓ Source: {label} -> {bus_label}")
+                    self.logger.debug(f"      ✓ Source (Investment): {label} -> {bus_label}")
+                else:
+                    self.logger.debug(f"      ✓ Source: {label} -> {bus_label}")
                 
             except Exception as e:
                 self.logger.error(f"❌ Fehler beim Erstellen von Source '{label}': {e}")
                 raise
     
     def _build_sinks(self, excel_data: Dict[str, Any]):
-        """Erstellt alle Sink-Objekte."""
+        """Erstellt alle Sink-Objekte mit neuer Investment-Logik."""
         if 'sinks' not in excel_data:
             self.logger.info("   ⏭️  Keine Sinks definiert")
             return
@@ -217,26 +218,31 @@ class SystemBuilder:
                 
                 bus = self.bus_objects[bus_label]
                 
-                # Flow erstellen
-                flow = self._create_flow(sink_data, timeseries_data, 'sink')
+                # NEUE Investment-Logik: Flow erstellen
+                flow = self._create_investment_flow(sink_data, timeseries_data, 'sink')
                 
                 # Sink erstellen
                 sink = solph.components.Sink(
                     label=label,
-                    inputs={bus: flow}
+                    inputs={bus: flow}  # Immer der erste (und einzige) Input-Flow
                 )
                 
                 self.component_objects[label] = sink
                 self.build_stats['sinks'] += 1
                 
-                self.logger.debug(f"      ✓ Sink: {bus_label} -> {label}")
+                # Investment-Statistik
+                if sink_data.get('is_investment', False):
+                    self.build_stats['investments'] += 1
+                    self.logger.debug(f"      ✓ Sink (Investment): {bus_label} -> {label}")
+                else:
+                    self.logger.debug(f"      ✓ Sink: {bus_label} -> {label}")
                 
             except Exception as e:
                 self.logger.error(f"❌ Fehler beim Erstellen von Sink '{label}': {e}")
                 raise
     
     def _build_simple_transformers(self, excel_data: Dict[str, Any]):
-        """Erstellt alle Simple Transformer-Objekte."""
+        """Erstellt alle Simple Transformer-Objekte mit neuer Investment-Logik."""
         if 'simple_transformers' not in excel_data:
             self.logger.info("   ⏭️  Keine Simple Transformers definiert")
             return
@@ -267,18 +273,19 @@ class SystemBuilder:
                 input_bus = self.bus_objects[input_bus_label]
                 output_bus = self.bus_objects[output_bus_label]
                 
-                # Input Flow erstellen
-                input_flow = self._create_flow(transformer_data, timeseries_data, 'transformer_input')
+                # NEUE Investment-Logik: Input Flow erstellen (Investment-Flow)
+                input_flow = self._create_investment_flow(transformer_data, timeseries_data, 'transformer_input')
                 
-                # Output Flow erstellen (ohne nominal_capacity, wird über input bestimmt)
+                # Output Flow erstellen (normaler Flow ohne Investment)
                 output_flow_data = transformer_data.copy()
-                output_flow_data['nominal_capacity'] = None  # Wird über Converter bestimmt
-                output_flow = self._create_flow(output_flow_data, timeseries_data, 'transformer_output')
+                output_flow_data['is_investment'] = False  # Output-Flow nie Investment
+                output_flow_data['existing'] = None  # Kapazität wird über Input bestimmt
+                output_flow = self._create_investment_flow(output_flow_data, timeseries_data, 'transformer_output')
                 
-                # Converter erstellen (0.6.0: Transformer -> Converter)
+                # Converter erstellen
                 converter = solph.components.Converter(
                     label=label,
-                    inputs={input_bus: input_flow},
+                    inputs={input_bus: input_flow},   # Investment-Flow am Input
                     outputs={output_bus: output_flow},
                     conversion_factors={output_bus: conversion_factor}
                 )
@@ -286,15 +293,229 @@ class SystemBuilder:
                 self.component_objects[label] = converter
                 self.build_stats['transformers'] += 1
                 
-                # Investment statistik
+                # Investment-Statistik
                 if transformer_data.get('is_investment', False):
                     self.build_stats['investments'] += 1
-                
-                self.logger.debug(f"      ✓ Converter: {input_bus_label} -> {output_bus_label} (η={conversion_factor})")
+                    self.logger.debug(f"      ✓ Converter (Investment): {input_bus_label} -> {output_bus_label} (η={conversion_factor})")
+                else:
+                    self.logger.debug(f"      ✓ Converter: {input_bus_label} -> {output_bus_label} (η={conversion_factor})")
                 
             except Exception as e:
                 self.logger.error(f"❌ Fehler beim Erstellen von Converter '{label}': {e}")
                 raise
+    
+    def _create_investment_flow(self, component_data: pd.Series, timeseries_data: pd.DataFrame, 
+                               flow_type: str) -> Flow:
+        """
+        NEUE METHODE: Erstellt ein Flow-Objekt mit neuer Investment-Logik.
+        
+        Args:
+            component_data: Pandas Series mit Komponentendaten
+            timeseries_data: DataFrame mit Zeitreihendaten
+            flow_type: Art des Flows ('source', 'sink', 'transformer_input', 'transformer_output')
+            
+        Returns:
+            oemof.solph.Flow Objekt
+        """
+        flow_params = {}
+        
+        # NEUE Investment-Logik anwenden
+        nominal_capacity = self._process_new_investment_capacity(component_data)
+        if nominal_capacity is not None:
+            flow_params['nominal_capacity'] = nominal_capacity
+        
+        # Variable Costs (unverändert)
+        if 'variable_costs' in component_data and pd.notna(component_data['variable_costs']):
+            try:
+                var_costs = float(component_data['variable_costs'])
+                flow_params['variable_costs'] = var_costs
+            except (ValueError, TypeError):
+                pass
+        
+        # Profile verarbeiten (unverändert)
+        profile = self._process_profiles(component_data, timeseries_data, flow_type)
+        if profile is not None:
+            if flow_type == 'sink':
+                # Für Sinks: fix profile
+                flow_params['fix'] = profile
+                # Wenn kein nominal_capacity gesetzt ist, verwende das Maximum des Profils
+                if 'nominal_capacity' not in flow_params:
+                    max_profile_value = max(profile) if profile else 1.0
+                    flow_params['nominal_capacity'] = max_profile_value * 1.2  # 20% Puffer
+                    self.logger.debug(f"Automatische nominal_capacity für Sink mit fix Profile: {flow_params['nominal_capacity']:.2f}")
+            else:
+                # Für Sources: max profile
+                flow_params['max'] = profile
+        
+        # Min/Max Constraints (TODO: implementieren)
+        if 'min' in component_data and pd.notna(component_data['min']):
+            try:
+                min_val = float(component_data['min'])
+                flow_params['min'] = min_val
+            except (ValueError, TypeError):
+                pass
+        
+        if 'max' in component_data and pd.notna(component_data['max']):
+            try:
+                max_val = float(component_data['max'])
+                flow_params['max'] = max_val
+            except (ValueError, TypeError):
+                pass
+        
+        # NonConvex Parameter (unverändert)
+        nonconvex_obj = self._create_nonconvex(component_data)
+        if nonconvex_obj is not None:
+            flow_params['nonconvex'] = nonconvex_obj
+        
+        # Flow erstellen
+        try:
+            return Flow(**flow_params)
+        except Exception as e:
+            self.logger.warning(f"Fehler beim Erstellen des Investment-Flows: {e}")
+            self.logger.warning(f"Flow-Parameter: {flow_params}")
+            # Fallback: Minimaler Flow
+            return Flow()
+    
+    def _process_new_investment_capacity(self, component_data: pd.Series) -> Optional[Union[float, Any]]:
+        """
+        ERWEITERT: Verarbeitet Investment-Kapazität mit Annuity-Berechnung.
+        
+        Neue Logik für ep_costs:
+        1. Nur investment_costs → ep_costs = investment_costs
+        2. investment_costs + lifetime + interest_rate → ep_costs = Annuity
+        """
+        is_investment = component_data.get('is_investment', False)
+        existing_value = component_data.get('existing')
+        
+        if is_investment:
+            # Investment-Fall: Erstelle Investment-Objekt
+            investment_params = {}
+            
+            # NEUE ANNUITY-BERECHNUNG FÜR EP_COSTS
+            ep_costs = self._calculate_ep_costs(component_data)
+            if ep_costs is not None:
+                investment_params['ep_costs'] = ep_costs
+            
+            # Investment-Grenzen (unverändert)
+            if 'invest_min' in component_data and pd.notna(component_data['invest_min']):
+                investment_params['minimum'] = float(component_data['invest_min'])
+            
+            if 'invest_max' in component_data and pd.notna(component_data['invest_max']):
+                investment_params['maximum'] = float(component_data['invest_max'])
+            
+            # Existing capacity als bestehende Kapazität (unverändert)
+            if existing_value is not None and pd.notna(existing_value):
+                try:
+                    existing_cap = float(existing_value)
+                    if existing_cap >= 0:
+                        investment_params['existing'] = existing_cap
+                except (ValueError, TypeError):
+                    self.logger.warning(f"Ungültiger existing-Wert für Investment: {existing_value}")
+            
+            # Investment-Objekt erstellen
+            if investment_params:
+                return Investment(**investment_params)
+            else:
+                self.logger.warning("Investment aktiviert, aber keine Investment-Parameter gefunden")
+                return None
+        
+        else:
+            # Normaler Fall: existing → nominal_capacity (unverändert)
+            if existing_value is not None and pd.notna(existing_value):
+                try:
+                    existing_cap = float(existing_value)
+                    if existing_cap > 0:
+                        return existing_cap
+                    else:
+                        self.logger.warning(f"existing-Wert <= 0: {existing_cap}")
+                        return None
+                except (ValueError, TypeError):
+                    self.logger.warning(f"Ungültiger existing-Wert: {existing_value}")
+                    return None
+            else:
+                return None
+            
+    def get_investment_summary(self, energy_system: solph.EnergySystem) -> Dict[str, Any]:
+        """
+        NEUE METHODE: Erstellt eine Zusammenfassung aller Investment-Komponenten.
+        
+        Args:
+            energy_system: Das oemof.solph EnergySystem
+            
+        Returns:
+            Dictionary mit Investment-Zusammenfassung
+        """
+        investment_summary = {
+            'total_investments': 0,
+            'sources_with_investment': [],
+            'sinks_with_investment': [],
+            'transformers_with_investment': [],
+            'total_potential_capacity': 0,
+            'total_investment_costs_max': 0
+        }
+        
+        nodes = energy_system.nodes
+        
+        for node in nodes:
+            node_label = str(node.label)
+            
+            # Investment-Flows finden
+            investment_flows = []
+            
+            # Inputs prüfen
+            if hasattr(node, 'inputs'):
+                for input_node, flow in node.inputs.items():
+                    if isinstance(getattr(flow, 'nominal_capacity', None), Investment):
+                        investment_flows.append({
+                            'direction': 'input',
+                            'connection': f"{input_node.label} → {node.label}",
+                            'investment': flow.nominal_capacity
+                        })
+            
+            # Outputs prüfen
+            if hasattr(node, 'outputs'):
+                for output_node, flow in node.outputs.items():
+                    if isinstance(getattr(flow, 'nominal_capacity', None), Investment):
+                        investment_flows.append({
+                            'direction': 'output',
+                            'connection': f"{node.label} → {output_node.label}",
+                            'investment': flow.nominal_capacity
+                        })
+            
+            # Investment-Komponenten kategorisieren
+            if investment_flows:
+                investment_summary['total_investments'] += 1
+                
+                # Komponententyp bestimmen
+                if isinstance(node, solph.components.Source):
+                    investment_summary['sources_with_investment'].append({
+                        'label': node_label,
+                        'flows': investment_flows
+                    })
+                elif isinstance(node, solph.components.Sink):
+                    investment_summary['sinks_with_investment'].append({
+                        'label': node_label,
+                        'flows': investment_flows
+                    })
+                elif isinstance(node, solph.components.Converter):
+                    investment_summary['transformers_with_investment'].append({
+                        'label': node_label,
+                        'flows': investment_flows
+                    })
+                
+                # Potentiale und Kosten summieren
+                for flow_info in investment_flows:
+                    investment = flow_info['investment']
+                    
+                    if hasattr(investment, 'maximum') and investment.maximum:
+                        investment_summary['total_potential_capacity'] += investment.maximum
+                    
+                    if hasattr(investment, 'ep_costs') and investment.ep_costs:
+                        if hasattr(investment, 'maximum') and investment.maximum:
+                            max_costs = investment.ep_costs * investment.maximum
+                            investment_summary['total_investment_costs_max'] += max_costs
+        
+        return investment_summary    
     
     def _create_flow(self, component_data: pd.Series, timeseries_data: pd.DataFrame, 
                      flow_type: str) -> Flow:
@@ -592,8 +813,6 @@ class SystemBuilder:
         is_valid = len(errors) == 0
         return is_valid, errors
 
-
-# Test-Funktionen
 def test_system_builder():
     """Testfunktion für den System-Builder."""
     from pathlib import Path
