@@ -345,6 +345,237 @@ sampling_n_factor | 4
 
 ---
 
+📊 Von Excel zu oemof.solph: Wie Tabellendaten zu Energiesystem-Objekten werden
+🔄 Der Grundlegende Datenfluss
+1. Excel-Eingabe (Benutzerfreundlich)
+excelSources Sheet:
+label     | include | bus    | existing | investment | investment_costs | lifetime | interest_rate
+pv_plant  | 1       | el_bus | 100      | 1          | 1000            | 25       | 0.05
+grid_import| 1      | el_bus | 500      | 0          |                 |          |
+2. Excel-Reader Verarbeitung (Daten-Aufbereitung)
+python# modules/excel_reader.py
+def _read_sheet() → pd.DataFrame:
+    # Spalten bereinigen, leere Zeilen entfernen
+    # String-Werte trimmen, NaN-Werte standardisieren
+
+def _validate_investment_logic():
+    # Investment-Parameter prüfen
+    # Annuity-Parameter validieren
+    
+def _calculate_ep_costs():
+    # Methode 1: investment_costs direkt
+    # Methode 2: Annuity = investment_costs * faktor
+3. System-Builder (Excel → oemof.solph)
+python# modules/system_builder.py  
+def _build_sources():
+    # Für jede Excel-Zeile:
+    # 1. Bus-Referenz auflösen
+    # 2. Flow-Objekt erstellen
+    # 3. Source-Objekt erstellen
+    # 4. Zu EnergySystem hinzufügen
+⚙️ Flow-Attribute: Excel-Spalten → oemof.solph Parameter
+Kapazitäten
+python# Excel: existing=100, investment=0
+→ Flow(nominal_capacity=100)
+
+# Excel: existing=100, investment=1, invest_max=400, investment_costs=800
+→ Flow(nominal_capacity=Investment(existing=100, maximum=400, ep_costs=800))
+
+# Excel: existing=0, investment=1, investment_costs=1000, lifetime=25, interest_rate=0.05
+→ Flow(nominal_capacity=Investment(maximum=500, ep_costs=71.05))  # Annuity berechnet!
+Variable Kosten
+python# Excel: variable_costs=0.25
+→ Flow(variable_costs=0.25)  # 0.25 €/kWh
+Profile/Zeitreihen
+python# Excel: profile_column="pv_profile"
+# → Sucht in timeseries Sheet nach Spalte "pv_profile" 
+profile_values = [0.8, 0.9, 0.7, ...]  # 168/744/8760 Werte
+
+# Für Sources:
+→ Flow(max=profile_values)  # Maximales Erzeugungsprofil
+
+# Für Sinks:  
+→ Flow(fix=profile_values)  # Feste Last
+→ Flow(nominal_capacity=max(profile_values) * 1.2)  # Auto-Kapazität
+🏗️ Komponenten-Erstellung: Verschiedene Typen
+Sources (Erzeuger)
+python# Excel-Zeile → oemof.solph Objekt
+{
+    'label': 'pv_plant',
+    'bus': 'el_bus', 
+    'existing': 100,
+    'investment': 1,
+    'investment_costs': 1000,
+    'lifetime': 25,
+    'interest_rate': 0.05,
+    'profile_column': 'pv_profile'
+}
+
+↓ System-Builder ↓
+
+solph.components.Source(
+    label='pv_plant',
+    outputs={
+        el_bus: solph.Flow(
+            nominal_capacity=Investment(
+                existing=100,           # Bestehende 100 kW
+                ep_costs=71.05,        # Annuity berechnet: 1000€ über 25a bei 5%
+                maximum=400            # Max Investment aus invest_max
+            ),
+            max=pv_profile_values      # Aus timeseries Sheet
+        )
+    }
+)
+Sinks (Verbraucher) - NEU: Mit Investment!
+python# Excel-Zeile → oemof.solph Objekt  
+{
+    'label': 'grid_export',
+    'bus': 'el_bus',
+    'existing': 50,
+    'investment': 1,
+    'investment_costs': 600,
+    'lifetime': 15,
+    'interest_rate': 0.04,
+    'variable_costs': -0.05
+}
+
+↓ System-Builder ↓
+
+solph.components.Sink(
+    label='grid_export',
+    inputs={
+        el_bus: solph.Flow(
+            nominal_capacity=Investment(
+                existing=50,           # Bestehende 50 kW Export-Kapazität
+                ep_costs=54.12,       # Annuity: 600€ über 15a bei 4%
+                maximum=100           # Max Investment
+            ),
+            variable_costs=-0.05      # Erlös für Export
+        )
+    }
+)
+Simple Transformers (Wandler)
+python# Excel-Zeile → oemof.solph Objekt
+{
+    'label': 'heat_pump',
+    'input_bus': 'el_bus',
+    'output_bus': 'heat_bus',
+    'conversion_factor': 3.5,
+    'existing': 30,
+    'investment': 1,
+    'investment_costs': 1200,
+    'lifetime': 15,
+    'interest_rate': 0.05
+}
+
+↓ System-Builder ↓
+
+solph.components.Converter(
+    label='heat_pump',
+    inputs={
+        el_bus: solph.Flow(
+            nominal_capacity=Investment(
+                existing=30,           # Bestehende 30 kW
+                ep_costs=115.63,      # Annuity: 1200€ über 15a bei 5%
+                maximum=120           # Max Investment
+            )
+        )
+    },
+    outputs={
+        heat_bus: solph.Flow()        # Output-Flow OHNE Investment
+    },
+    conversion_factors={heat_bus: 3.5}  # COP = 3.5
+)
+💰 Investment-System: Zwei Berechnungsmethoden
+Methode 1: Direkte Kosten
+excelinvestment_costs | lifetime | interest_rate
+80              |          |
+python→ ep_costs = 80  # Direkt übernommen
+Methode 2: Annuity-Berechnung
+excelinvestment_costs | lifetime | interest_rate  
+1000            | 25       | 0.05
+python# Annuity-Formel: A = I * (r * (1+r)^n) / ((1+r)^n - 1)
+r = 0.05  # 5%
+n = 25    # Jahre
+annuity_factor = (0.05 * (1.05)^25) / ((1.05)^25 - 1) = 0.07095
+→ ep_costs = 1000 * 0.07095 = 71.05 €/kW/a
+Spezialfall: Zinssatz = 0%
+excelinvestment_costs | lifetime | interest_rate
+1000            | 20       | 0.0
+python→ ep_costs = 1000 / 20 = 50 €/kW/a  # Einfache Division
+🔗 Investment-Flow-Verknüpfung
+Automatische Verknüpfung mit erstem Flow:
+Sources: Investment → Output-Flow
+pythonSource(outputs={bus: Investment-Flow})  # Einziger Output
+Sinks: Investment → Input-Flow
+pythonSink(inputs={bus: Investment-Flow})     # Einziger Input
+Transformers: Investment → Input-Flow
+pythonConverter(
+    inputs={bus: Investment-Flow},      # Investment am Input
+    outputs={bus: Normal-Flow}          # Output ohne Investment
+)
+📈 Komplexe Attribute (Geplant/Implementiert)
+Min/Max Constraints
+python# Excel: min=0.2, max=0.8
+→ Flow(
+    nominal_capacity=100,
+    min=0.2,  # Mindestens 20% der Kapazität  
+    max=0.8   # Höchstens 80% der Kapazität
+)
+Rampen-Limits
+python# Excel: positive_gradient_limit=10, negative_gradient_limit=15
+→ Flow(
+    positive_gradient_limit=10,  # Max 10 kW/h Anstieg
+    negative_gradient_limit=15   # Max 15 kW/h Abstieg
+)
+NonConvex Parameter
+python# Excel: minimum_uptime=4, startup_costs=100
+→ Flow(nonconvex=NonConvex(
+    minimum_uptime=4,     # Min 4h Betrieb
+    startup_costs=100     # 100€ Anfahrkosten
+))
+🎯 Zusammenfassung: Der komplette Weg
+1. Excel-Tabelle (Benutzer-Input)
+Einfache, verständliche Tabellen mit allen Parametern
+2. Excel-Reader (Daten-Aufbereitung)
+python- Einlesen und Bereinigen
+- Validierung der Parameter  
+- Annuity-Berechnung
+- Investment-Logik anwenden
+3. System-Builder (Objekt-Erstellung)
+python- Excel-Daten → Flow-Objekte
+- Flow-Objekte → Komponenten-Objekte  
+- Komponenten → EnergySystem
+- Investment automatisch verknüpfen
+4. oemof.solph (Optimierung)
+python- EnergySystem → Mathematisches Modell
+- Solver → Optimale Lösung
+- Ergebnisse → Flows, Investitionen, Kosten
+🔍 Vorteile des Systems
+Für Benutzer:
+
+✅ Einfache Excel-Eingabe - keine Programmierung nötig
+✅ Automatische Annuity-Berechnung - Finanzmath ist integriert
+✅ Investment für alle Komponenten - Sources, Sinks, Transformers
+✅ Flexible Parameter - existing + investment kombinierbar
+
+Für Entwickler:
+
+✅ Modulare Architektur - klar getrennte Verantwortlichkeiten
+✅ Erweiterbar - neue Attribute einfach hinzufügbar
+✅ Validierung - Fehler werden früh erkannt
+✅ Dokumentiert - jeder Schritt ist nachvollziehbar
+
+Für oemof.solph:
+
+✅ Standard-konforme Objekte - Flow, Investment, NonConvex
+✅ Optimale Performance - keine Änderungen am Solver nötig
+✅ Vollständige Features - alle oemof.solph Funktionen nutzbar
+
+Das System macht oemof.solph-Modellierung zugänglich ohne Programmierkenntnisse und gleichzeitig mächtig für Experten!
+
+---
+
 ## 📋 **VOLLSTÄNDIGE TODO-LISTE**
 
 ### **🔥 PRIORITY 0: Timestep-Management Finalisierung (ABGESCHLOSSEN ✅)**
