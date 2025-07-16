@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """
-oemof.solph 0.6.0 Ergebnisverarbeitung (VOLLSTÄNDIG ERWEITERT)
-============================================================
+oemof.solph 0.6.0 Erweiterte Kostenanalyse und Energiesystem-Export
+===================================================================
 
-Verarbeitet und speichert Optimierungsergebnisse in verschiedenen Formaten.
-Erstellt strukturierte Ausgabedateien und detaillierte Zielfunktions-Aufschlüsselung.
-
-VOLLSTÄNDIG ERWEITERT: Komplette Zielfunktions-Aufschlüsselung nach Technologien,
-Kostenarten und Energiesystem-Objekten mit Investment-Annuity-Unterstützung.
+Vollständige Kostenaufschlüsselung durch Abgleich von EnergySystem-Objekten
+mit Optimierungsergebnissen und kompletter Energiesystem-Export.
 
 Autor: [Ihr Name]
 Datum: Juli 2025
@@ -16,6 +13,7 @@ Version: 2.0.0
 
 import pandas as pd
 import numpy as np
+import json
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 import logging
@@ -27,1005 +25,1251 @@ except ImportError:
     solph = None
 
 
-class EnhancedResultsProcessor:
-    """Erweiterte Klasse für die Verarbeitung und Speicherung von Optimierungsergebnissen."""
+class EnergySystemAnalyzer:
+    """Analysiert EnergySystem-Objekte und berechnet detaillierte Kosten."""
     
     def __init__(self, output_dir: Path, settings: Dict[str, Any]):
-        """
-        Initialisiert den Enhanced Results-Processor.
-        
-        Args:
-            output_dir: Ausgabeverzeichnis
-            settings: Konfigurationsdictionary
-        """
+        """Initialisiert den Analyzer."""
         self.output_dir = Path(output_dir)
         self.settings = settings
         self.logger = logging.getLogger(__name__)
         
-        # Output-Format
-        self.output_format = settings.get('output_format', 'xlsx')
-        
-        # Erstellte Dateien
-        self.output_files = []
-        
-        # Zielfunktions-Cache für Performance
-        self._objective_cache = {}
+        # Caches für Performance
+        self._system_export_cache = None
+        self._cost_mapping_cache = None
     
-    def process_results(self, results: Dict[str, Any], energy_system: Any, 
-                       excel_data: Dict[str, Any]) -> Dict[str, Any]:
+    def export_complete_energy_system(self, energy_system: Any, excel_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Verarbeitet die Optimierungsergebnisse komplett mit erweiterter Kostenanalyse.
+        Exportiert das komplette EnergySystem als strukturiertes Dictionary.
         
         Args:
-            results: oemof.solph Ergebnisse
+            energy_system: oemof.solph EnergySystem
+            excel_data: Original Excel-Daten
+            
+        Returns:
+            Vollständiger System-Export
+        """
+        self.logger.info("🔍 Exportiere komplettes Energiesystem...")
+        
+        system_export = {
+            'metadata': self._export_system_metadata(energy_system),
+            'timeindex': self._export_timeindex(energy_system),
+            'nodes': self._export_all_nodes(energy_system),
+            'flows': self._export_all_flows(energy_system),
+            'investments': self._export_investment_definitions(energy_system),
+            'nonconvex': self._export_nonconvex_definitions(energy_system),
+            'cost_parameters': self._export_cost_parameters(energy_system),
+            'original_excel_data': self._export_excel_reference(excel_data),
+            'system_statistics': self._calculate_system_statistics(energy_system)
+        }
+        
+        # Cache für spätere Verwendung
+        self._system_export_cache = system_export
+        
+        # Als JSON speichern
+        self._save_system_export(system_export)
+        
+        self.logger.info("✅ Energiesystem-Export abgeschlossen")
+        return system_export
+    
+    def calculate_comprehensive_costs(self, results: Dict[str, Any], 
+                                    energy_system: Any, 
+                                    excel_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Berechnet vollständige Kostenaufschlüsselung durch Abgleich 
+        von EnergySystem-Parametern mit Optimierungsergebnissen.
+        
+        Args:
+            results: oemof.solph Optimierungsergebnisse
+            energy_system: EnergySystem-Objekt
+            excel_data: Original Excel-Daten
+            
+        Returns:
+            Detaillierte Kostenaufschlüsselung
+        """
+        self.logger.info("💰 Berechne detaillierte Kostenaufschlüsselung...")
+        
+        # System-Export laden (falls nicht gecacht)
+        if self._system_export_cache is None:
+            system_export = self.export_complete_energy_system(energy_system, excel_data)
+        else:
+            system_export = self._system_export_cache
+        
+        cost_breakdown = {
+            'investment_costs': self._calculate_investment_costs_detailed(results, system_export),
+            'variable_costs': self._calculate_variable_costs_detailed(results, system_export),
+            'fixed_costs': self._calculate_fixed_costs_detailed(results, system_export),
+            'objective_breakdown': self._reconstruct_objective_function(results, system_export),
+            'cost_by_technology': self._calculate_costs_by_technology(results, system_export),
+            'cost_by_component': self._calculate_costs_by_component(results, system_export),
+            'cost_validation': self._validate_cost_calculation(results, system_export)
+        }
+        
+        # Gesamtkostenübersicht
+        cost_breakdown['summary'] = self._create_cost_summary(cost_breakdown)
+        
+        # Als Excel und JSON speichern
+        self._save_cost_breakdown(cost_breakdown)
+        
+        self.logger.info("✅ Kostenanalyse abgeschlossen")
+        return cost_breakdown
+    
+    def _export_system_metadata(self, energy_system: Any) -> Dict[str, Any]:
+        """Exportiert System-Metadaten."""
+        return {
+            'creation_timestamp': pd.Timestamp.now().isoformat(),
+            'oemof_version': getattr(solph, '__version__', 'unknown'),
+            'total_nodes': len(energy_system.nodes) if hasattr(energy_system, 'nodes') else 0,
+            'timeindex_periods': len(energy_system.timeindex) if hasattr(energy_system, 'timeindex') else 0,
+            'system_type': 'EnergySystem'
+        }
+    
+    def _export_timeindex(self, energy_system: Any) -> Dict[str, Any]:
+        """Exportiert Zeitindex-Informationen."""
+        if not hasattr(energy_system, 'timeindex'):
+            return {}
+        
+        timeindex = energy_system.timeindex
+        
+        return {
+            'start': timeindex[0].isoformat() if len(timeindex) > 0 else None,
+            'end': timeindex[-1].isoformat() if len(timeindex) > 0 else None,
+            'periods': len(timeindex),
+            'frequency': pd.infer_freq(timeindex),
+            'first_10_timestamps': [ts.isoformat() for ts in timeindex[:10]],
+            'last_10_timestamps': [ts.isoformat() for ts in timeindex[-10:]]
+        }
+    
+    def _export_all_nodes(self, energy_system: Any) -> Dict[str, Dict[str, Any]]:
+        """Exportiert alle Nodes mit vollständigen Eigenschaften."""
+        nodes_export = {}
+        
+        if not hasattr(energy_system, 'nodes'):
+            return nodes_export
+        
+        for node in energy_system.nodes:
+            node_label = str(node.label)
+            
+            node_export = {
+                'label': node_label,
+                'type': type(node).__name__,
+                'module': type(node).__module__,
+                'attributes': self._export_node_attributes(node),
+                'inputs': self._export_node_connections(node, 'inputs'),
+                'outputs': self._export_node_connections(node, 'outputs')
+            }
+            
+            nodes_export[node_label] = node_export
+        
+        return nodes_export
+    
+    def _export_node_attributes(self, node: Any) -> Dict[str, Any]:
+        """Exportiert alle Attribute eines Nodes."""
+        attributes = {}
+        
+        # Basis-Attribute
+        basic_attrs = ['label']
+        for attr in basic_attrs:
+            if hasattr(node, attr):
+                attributes[attr] = str(getattr(node, attr))
+        
+        # Spezielle Attribute je nach Node-Typ
+        if isinstance(node, solph.buses.Bus):
+            # Bus hat meist keine speziellen Attribute
+            attributes['bus_type'] = 'Bus'
+        
+        elif isinstance(node, solph.components.Source):
+            attributes['component_type'] = 'Source'
+        
+        elif isinstance(node, solph.components.Sink):
+            attributes['component_type'] = 'Sink'
+        
+        elif isinstance(node, solph.components.Converter):
+            attributes['component_type'] = 'Converter'
+            # Conversion factors
+            if hasattr(node, 'conversion_factors'):
+                attributes['conversion_factors'] = {
+                    str(k.label): v for k, v in node.conversion_factors.items()
+                }
+        
+        return attributes
+    
+    def _export_node_connections(self, node: Any, direction: str) -> Dict[str, Dict[str, Any]]:
+        """Exportiert Input- oder Output-Verbindungen eines Nodes."""
+        connections = {}
+        
+        if not hasattr(node, direction):
+            return connections
+        
+        connections_dict = getattr(node, direction)
+        
+        for connected_node, flow in connections_dict.items():
+            connection_key = str(connected_node.label)
+            
+            connections[connection_key] = {
+                'connected_to': str(connected_node.label),
+                'connected_type': type(connected_node).__name__,
+                'flow_properties': self._export_flow_properties(flow)
+            }
+        
+        return connections
+    
+    def _export_flow_properties(self, flow: Any) -> Dict[str, Any]:
+        """Exportiert alle Eigenschaften eines Flows."""
+        properties = {}
+        
+        # Standard Flow-Attribute
+        flow_attrs = [
+            'nominal_capacity', 'variable_costs', 'min', 'max', 
+            'fix', 'summed_max', 'summed_min', 'positive_gradient_limit',
+            'negative_gradient_limit', 'full_load_time_max', 'full_load_time_min'
+        ]
+        
+        for attr in flow_attrs:
+            if hasattr(flow, attr):
+                value = getattr(flow, attr)
+                
+                if value is not None:
+                    if isinstance(value, Investment):
+                        properties[attr] = self._export_investment_properties(value)
+                    elif isinstance(value, NonConvex):
+                        properties[attr] = self._export_nonconvex_properties(value)
+                    elif isinstance(value, (list, np.ndarray)):
+                        # Zeitreihen als Statistiken speichern
+                        properties[attr] = {
+                            'type': 'timeseries',
+                            'length': len(value),
+                            'min': float(np.min(value)),
+                            'max': float(np.max(value)),
+                            'mean': float(np.mean(value)),
+                            'sum': float(np.sum(value)),
+                            'first_10': [float(v) for v in value[:10]],
+                            'last_10': [float(v) for v in value[-10:]]
+                        }
+                    else:
+                        try:
+                            # Versuche JSON-serialisierbar zu machen
+                            properties[attr] = float(value) if isinstance(value, (int, float)) else str(value)
+                        except:
+                            properties[attr] = str(value)
+        
+        return properties
+    
+    def _export_investment_properties(self, investment: Any) -> Dict[str, Any]:
+        """Exportiert Investment-Eigenschaften."""
+        properties = {'type': 'Investment'}
+        
+        investment_attrs = [
+            'ep_costs', 'minimum', 'maximum', 'existing', 'offset',
+            'nonconvex', 'overall_maximum', 'overall_minimum'
+        ]
+        
+        for attr in investment_attrs:
+            if hasattr(investment, attr):
+                value = getattr(investment, attr)
+                if value is not None:
+                    if isinstance(value, NonConvex):
+                        properties[attr] = self._export_nonconvex_properties(value)
+                    else:
+                        try:
+                            properties[attr] = float(value) if isinstance(value, (int, float)) else str(value)
+                        except:
+                            properties[attr] = str(value)
+        
+        return properties
+    
+    def _export_nonconvex_properties(self, nonconvex: Any) -> Dict[str, Any]:
+        """Exportiert NonConvex-Eigenschaften."""
+        properties = {'type': 'NonConvex'}
+        
+        nonconvex_attrs = [
+            'minimum_uptime', 'minimum_downtime', 'startup_costs', 'shutdown_costs',
+            'maximum_startups', 'maximum_shutdowns', 'initial_status',
+            'activity_costs', 'inactivity_costs'
+        ]
+        
+        for attr in nonconvex_attrs:
+            if hasattr(nonconvex, attr):
+                value = getattr(nonconvex, attr)
+                if value is not None:
+                    try:
+                        properties[attr] = float(value) if isinstance(value, (int, float)) else str(value)
+                    except:
+                        properties[attr] = str(value)
+        
+        return properties
+    
+    def _export_all_flows(self, energy_system: Any) -> List[Dict[str, Any]]:
+        """Exportiert alle Flows mit vollständigen Informationen."""
+        flows_export = []
+        
+        if not hasattr(energy_system, 'nodes'):
+            return flows_export
+        
+        for node in energy_system.nodes:
+            # Output-Flows
+            if hasattr(node, 'outputs'):
+                for output_node, flow in node.outputs.items():
+                    flow_export = {
+                        'source': str(node.label),
+                        'target': str(output_node.label),
+                        'source_type': type(node).__name__,
+                        'target_type': type(output_node).__name__,
+                        'direction': 'output',
+                        'properties': self._export_flow_properties(flow)
+                    }
+                    flows_export.append(flow_export)
+        
+        return flows_export
+    
+    def _export_investment_definitions(self, energy_system: Any) -> List[Dict[str, Any]]:
+        """Exportiert alle Investment-Definitionen."""
+        investments = []
+        
+        for node in energy_system.nodes:
+            node_label = str(node.label)
+            
+            # Input-Flows prüfen
+            if hasattr(node, 'inputs'):
+                for input_node, flow in node.inputs.items():
+                    if hasattr(flow, 'nominal_capacity') and isinstance(flow.nominal_capacity, Investment):
+                        investment_def = {
+                            'component': node_label,
+                            'flow_direction': 'input',
+                            'connection': f"{input_node.label} → {node_label}",
+                            'investment_parameters': self._export_investment_properties(flow.nominal_capacity)
+                        }
+                        investments.append(investment_def)
+            
+            # Output-Flows prüfen
+            if hasattr(node, 'outputs'):
+                for output_node, flow in node.outputs.items():
+                    if hasattr(flow, 'nominal_capacity') and isinstance(flow.nominal_capacity, Investment):
+                        investment_def = {
+                            'component': node_label,
+                            'flow_direction': 'output',
+                            'connection': f"{node_label} → {output_node.label}",
+                            'investment_parameters': self._export_investment_properties(flow.nominal_capacity)
+                        }
+                        investments.append(investment_def)
+        
+        return investments
+    
+    def _export_nonconvex_definitions(self, energy_system: Any) -> List[Dict[str, Any]]:
+        """Exportiert alle NonConvex-Definitionen."""
+        nonconvex_list = []
+        
+        for node in energy_system.nodes:
+            node_label = str(node.label)
+            
+            # Input-Flows prüfen
+            if hasattr(node, 'inputs'):
+                for input_node, flow in node.inputs.items():
+                    if hasattr(flow, 'nonconvex') and flow.nonconvex is not None:
+                        nonconvex_def = {
+                            'component': node_label,
+                            'flow_direction': 'input',
+                            'connection': f"{input_node.label} → {node_label}",
+                            'nonconvex_parameters': self._export_nonconvex_properties(flow.nonconvex)
+                        }
+                        nonconvex_list.append(nonconvex_def)
+            
+            # Output-Flows prüfen
+            if hasattr(node, 'outputs'):
+                for output_node, flow in node.outputs.items():
+                    if hasattr(flow, 'nonconvex') and flow.nonconvex is not None:
+                        nonconvex_def = {
+                            'component': node_label,
+                            'flow_direction': 'output',
+                            'connection': f"{node_label} → {output_node.label}",
+                            'nonconvex_parameters': self._export_nonconvex_properties(flow.nonconvex)
+                        }
+                        nonconvex_list.append(nonconvex_def)
+        
+        return nonconvex_list
+    
+    def _export_cost_parameters(self, energy_system: Any) -> Dict[str, List[Dict[str, Any]]]:
+        """Exportiert alle kostenrelevanten Parameter."""
+        cost_params = {
+            'variable_costs': [],
+            'investment_costs': [],
+            'fixed_costs': [],
+            'startup_costs': [],
+            'shutdown_costs': []
+        }
+        
+        for node in energy_system.nodes:
+            node_label = str(node.label)
+            
+            # Alle Flows durchgehen
+            flows_to_check = []
+            
+            if hasattr(node, 'inputs'):
+                for input_node, flow in node.inputs.items():
+                    flows_to_check.append((f"{input_node.label} → {node_label}", flow))
+            
+            if hasattr(node, 'outputs'):
+                for output_node, flow in node.outputs.items():
+                    flows_to_check.append((f"{node_label} → {output_node.label}", flow))
+            
+            for connection, flow in flows_to_check:
+                # Variable Kosten
+                if hasattr(flow, 'variable_costs') and flow.variable_costs is not None:
+                    cost_params['variable_costs'].append({
+                        'component': node_label,
+                        'connection': connection,
+                        'variable_costs': float(flow.variable_costs)
+                    })
+                
+                # Investment-Kosten (EP-Costs)
+                if hasattr(flow, 'nominal_capacity') and isinstance(flow.nominal_capacity, Investment):
+                    investment = flow.nominal_capacity
+                    if hasattr(investment, 'ep_costs') and investment.ep_costs is not None:
+                        cost_params['investment_costs'].append({
+                            'component': node_label,
+                            'connection': connection,
+                            'ep_costs': float(investment.ep_costs),
+                            'existing': float(getattr(investment, 'existing', 0)),
+                            'minimum': float(getattr(investment, 'minimum', 0)),
+                            'maximum': float(getattr(investment, 'maximum', np.inf))
+                        })
+                
+                # NonConvex-Kosten
+                if hasattr(flow, 'nonconvex') and flow.nonconvex is not None:
+                    nonconvex = flow.nonconvex
+                    
+                    if hasattr(nonconvex, 'startup_costs') and nonconvex.startup_costs is not None:
+                        cost_params['startup_costs'].append({
+                            'component': node_label,
+                            'connection': connection,
+                            'startup_costs': float(nonconvex.startup_costs)
+                        })
+                    
+                    if hasattr(nonconvex, 'shutdown_costs') and nonconvex.shutdown_costs is not None:
+                        cost_params['shutdown_costs'].append({
+                            'component': node_label,
+                            'connection': connection,
+                            'shutdown_costs': float(nonconvex.shutdown_costs)
+                        })
+        
+        return cost_params
+    
+    def _export_excel_reference(self, excel_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Exportiert Referenz zu originalen Excel-Daten."""
+        excel_ref = {
+            'sheets_available': list(excel_data.keys()),
+            'timeindex_info': excel_data.get('timeindex_info', {}),
+            'data_summary': {}
+        }
+        
+        # Zusammenfassung der Excel-Sheets
+        for sheet_name, data in excel_data.items():
+            if isinstance(data, pd.DataFrame):
+                excel_ref['data_summary'][sheet_name] = {
+                    'rows': len(data),
+                    'columns': list(data.columns),
+                    'shape': data.shape
+                }
+        
+        return excel_ref
+    
+    def _calculate_system_statistics(self, energy_system: Any) -> Dict[str, Any]:
+        """Berechnet System-Statistiken."""
+        stats = {
+            'total_nodes': 0,
+            'total_flows': 0,
+            'node_types': {},
+            'investment_flows': 0,
+            'nonconvex_flows': 0,
+            'cost_relevant_flows': 0
+        }
+        
+        if hasattr(energy_system, 'nodes'):
+            stats['total_nodes'] = len(energy_system.nodes)
+            
+            for node in energy_system.nodes:
+                node_type = type(node).__name__
+                stats['node_types'][node_type] = stats['node_types'].get(node_type, 0) + 1
+                
+                # Flows zählen
+                if hasattr(node, 'outputs'):
+                    for flow in node.outputs.values():
+                        stats['total_flows'] += 1
+                        
+                        if hasattr(flow, 'nominal_capacity') and isinstance(flow.nominal_capacity, Investment):
+                            stats['investment_flows'] += 1
+                        
+                        if hasattr(flow, 'nonconvex') and flow.nonconvex is not None:
+                            stats['nonconvex_flows'] += 1
+                        
+                        if (hasattr(flow, 'variable_costs') and flow.variable_costs is not None and flow.variable_costs != 0):
+                            stats['cost_relevant_flows'] += 1
+        
+        return stats
+    
+    def _calculate_investment_costs_detailed(self, results: Dict[str, Any], 
+                                           system_export: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Berechnet detaillierte Investment-Kosten."""
+        investment_costs = []
+        
+        # Investment-Definitionen aus System-Export
+        investments = system_export.get('investments', [])
+        
+        for investment_def in investments:
+            component = investment_def['component']
+            connection = investment_def['connection']
+            params = investment_def['investment_parameters']
+            
+            # Suche entsprechende Results
+            for (source, target), flow_results in results.items():
+                result_connection = f"{source} → {target}"
+                
+                if result_connection == connection and 'scalars' in flow_results:
+                    scalars = flow_results['scalars']
+                    
+                    # Investierte Kapazität
+                    invested_capacity = scalars.get('invest', 0)
+                    
+                    if invested_capacity > 0:
+                        # EP-Costs aus System-Export
+                        ep_costs = params.get('ep_costs', 0)
+                        
+                        # Jährliche Investment-Kosten
+                        annual_investment_costs = ep_costs * invested_capacity
+                        
+                        investment_cost = {
+                            'component': component,
+                            'connection': connection,
+                            'invested_capacity_kW': invested_capacity,
+                            'ep_costs_EUR_per_kW_per_year': ep_costs,
+                            'annual_investment_costs_EUR': annual_investment_costs,
+                            'existing_capacity_kW': params.get('existing', 0),
+                            'investment_minimum_kW': params.get('minimum', 0),
+                            'investment_maximum_kW': params.get('maximum', np.inf),
+                            'total_capacity_kW': invested_capacity + params.get('existing', 0)
+                        }
+                        
+                        investment_costs.append(investment_cost)
+        
+        return investment_costs
+    
+    def _calculate_variable_costs_detailed(self, results: Dict[str, Any], 
+                                         system_export: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Berechnet detaillierte variable Kosten."""
+        variable_costs = []
+        
+        # Variable Kosten-Parameter aus System-Export
+        var_cost_params = system_export.get('cost_parameters', {}).get('variable_costs', [])
+        
+        for cost_param in var_cost_params:
+            component = cost_param['component']
+            connection = cost_param['connection']
+            var_costs_rate = cost_param['variable_costs']
+            
+            # Suche entsprechende Results
+            for (source, target), flow_results in results.items():
+                result_connection = f"{source} → {target}"
+                
+                if result_connection == connection and 'sequences' in flow_results:
+                    flow_values = flow_results['sequences'].get('flow')
+                    
+                    if flow_values is not None:
+                        total_energy = flow_values.sum()
+                        
+                        if total_energy > 0 and var_costs_rate != 0:
+                            total_variable_costs = total_energy * var_costs_rate
+                            
+                            variable_cost = {
+                                'component': component,
+                                'connection': connection,
+                                'total_energy_kWh': total_energy,
+                                'variable_costs_EUR_per_kWh': var_costs_rate,
+                                'total_variable_costs_EUR': total_variable_costs,
+                                'max_power_kW': flow_values.max(),
+                                'average_power_kW': flow_values.mean(),
+                                'operating_hours': (flow_values > 0).sum(),
+                                'capacity_factor': flow_values.mean() / flow_values.max() if flow_values.max() > 0 else 0
+                            }
+                            
+                            variable_costs.append(variable_cost)
+        
+        return variable_costs
+    
+    def _calculate_fixed_costs_detailed(self, results: Dict[str, Any], 
+                                      system_export: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Berechnet detaillierte fixe Kosten."""
+        # Placeholder für fixe Kosten (nicht Standard in oemof.solph)
+        return []
+    
+    def _reconstruct_objective_function(self, results: Dict[str, Any], 
+                                       system_export: Dict[str, Any]) -> Dict[str, Any]:
+        """Rekonstruiert die Zielfunktion aus den Einzelkomponenten."""
+        
+        objective_breakdown = {
+            'total_objective_value': 0,
+            'investment_costs_total': 0,
+            'variable_costs_total': 0,
+            'fixed_costs_total': 0,
+            'startup_costs_total': 0,
+            'shutdown_costs_total': 0,
+            'breakdown_by_component': {}
+        }
+        
+        # Investment-Kosten summieren
+        investment_costs = self._calculate_investment_costs_detailed(results, system_export)
+        for inv_cost in investment_costs:
+            objective_breakdown['investment_costs_total'] += inv_cost['annual_investment_costs_EUR']
+        
+        # Variable Kosten summieren
+        variable_costs = self._calculate_variable_costs_detailed(results, system_export)
+        for var_cost in variable_costs:
+            objective_breakdown['variable_costs_total'] += var_cost['total_variable_costs_EUR']
+        
+        # Gesamtzielfunktionswert
+        objective_breakdown['total_objective_value'] = (
+            objective_breakdown['investment_costs_total'] + 
+            objective_breakdown['variable_costs_total'] + 
+            objective_breakdown['fixed_costs_total'] +
+            objective_breakdown['startup_costs_total'] +
+            objective_breakdown['shutdown_costs_total']
+        )
+        
+        return objective_breakdown
+    
+    def _calculate_costs_by_technology(self, results: Dict[str, Any], 
+                                     system_export: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
+        """Gruppiert Kosten nach Technologie-Typ."""
+        tech_costs = {}
+        
+        # Investment-Kosten nach Technologie
+        investment_costs = self._calculate_investment_costs_detailed(results, system_export)
+        for inv_cost in investment_costs:
+            component = inv_cost['component']
+            tech_type = self._determine_technology_type(component)
+            
+            if tech_type not in tech_costs:
+                tech_costs[tech_type] = {'investment': 0, 'variable': 0, 'total': 0}
+            
+            tech_costs[tech_type]['investment'] += inv_cost['annual_investment_costs_EUR']
+        
+        # Variable Kosten nach Technologie
+        variable_costs = self._calculate_variable_costs_detailed(results, system_export)
+        for var_cost in variable_costs:
+            component = var_cost['component']
+            tech_type = self._determine_technology_type(component)
+            
+            if tech_type not in tech_costs:
+                tech_costs[tech_type] = {'investment': 0, 'variable': 0, 'total': 0}
+            
+            tech_costs[tech_type]['variable'] += var_cost['total_variable_costs_EUR']
+        
+        # Gesamtkosten berechnen
+        for tech_type in tech_costs:
+            tech_costs[tech_type]['total'] = (
+                tech_costs[tech_type]['investment'] + 
+                tech_costs[tech_type]['variable']
+            )
+        
+        return tech_costs
+    
+    def _calculate_costs_by_component(self, results: Dict[str, Any], 
+                                    system_export: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
+        """Gruppiert Kosten nach Komponente."""
+        component_costs = {}
+        
+        # Investment-Kosten nach Komponente
+        investment_costs = self._calculate_investment_costs_detailed(results, system_export)
+        for inv_cost in investment_costs:
+            component = inv_cost['component']
+            
+            if component not in component_costs:
+                component_costs[component] = {'investment': 0, 'variable': 0, 'total': 0}
+            
+            component_costs[component]['investment'] += inv_cost['annual_investment_costs_EUR']
+        
+        # Variable Kosten nach Komponente
+        variable_costs = self._calculate_variable_costs_detailed(results, system_export)
+        for var_cost in variable_costs:
+            component = var_cost['component']
+            
+            if component not in component_costs:
+                component_costs[component] = {'investment': 0, 'variable': 0, 'total': 0}
+            
+            component_costs[component]['variable'] += var_cost['total_variable_costs_EUR']
+        
+        # Gesamtkosten berechnen
+        for component in component_costs:
+            component_costs[component]['total'] = (
+                component_costs[component]['investment'] + 
+                component_costs[component]['variable']
+            )
+        
+        return component_costs
+    
+    def _validate_cost_calculation(self, results: Dict[str, Any], 
+                                 system_export: Dict[str, Any]) -> Dict[str, Any]:
+        """Validiert die Kostenberechnung."""
+        validation = {
+            'total_flows_checked': 0,
+            'flows_with_costs': 0,
+            'flows_with_investment': 0,
+            'cost_calculation_complete': True,
+            'missing_cost_data': [],
+            'warnings': []
+        }
+        
+        # Prüfe alle Flows in den Results
+        for (source, target), flow_results in results.items():
+            validation['total_flows_checked'] += 1
+            
+            connection = f"{source} → {target}"
+            has_cost_data = False
+            
+            # Prüfe auf Investment
+            if 'scalars' in flow_results and flow_results['scalars'].get('invest', 0) > 0:
+                validation['flows_with_investment'] += 1
+                has_cost_data = True
+            
+            # Prüfe auf variable Kosten (über System-Export)
+            var_cost_params = system_export.get('cost_parameters', {}).get('variable_costs', [])
+            for cost_param in var_cost_params:
+                if cost_param['connection'] == connection and cost_param['variable_costs'] != 0:
+                    has_cost_data = True
+                    break
+            
+            if has_cost_data:
+                validation['flows_with_costs'] += 1
+            else:
+                # Prüfe ob es ein Cost-neutraler Flow ist (z.B. Bus-zu-Bus)
+                if 'bus' not in str(source).lower() or 'bus' not in str(target).lower():
+                    validation['missing_cost_data'].append(connection)
+        
+        # Warnungen generieren
+        if validation['missing_cost_data']:
+            validation['warnings'].append(
+                f"{len(validation['missing_cost_data'])} Flows ohne Kostendaten gefunden"
+            )
+        
+        if validation['flows_with_costs'] == 0:
+            validation['warnings'].append("Keine kostenrelevanten Flows gefunden")
+            validation['cost_calculation_complete'] = False
+        
+        return validation
+    
+    def _create_cost_summary(self, cost_breakdown: Dict[str, Any]) -> Dict[str, Any]:
+        """Erstellt eine Zusammenfassung der Kostenanalyse."""
+        summary = {
+            'total_system_costs_EUR': 0,
+            'investment_costs_EUR': 0,
+            'variable_costs_EUR': 0,
+            'fixed_costs_EUR': 0,
+            'cost_shares_percent': {},
+            'dominant_cost_type': '',
+            'number_of_investments': 0,
+            'number_of_variable_cost_flows': 0
+        }
+        
+        # Investment-Kosten
+        investment_costs = cost_breakdown.get('investment_costs', [])
+        summary['number_of_investments'] = len(investment_costs)
+        summary['investment_costs_EUR'] = sum(inv['annual_investment_costs_EUR'] for inv in investment_costs)
+        
+        # Variable Kosten
+        variable_costs = cost_breakdown.get('variable_costs', [])
+        summary['number_of_variable_cost_flows'] = len(variable_costs)
+        summary['variable_costs_EUR'] = sum(var['total_variable_costs_EUR'] for var in variable_costs)
+        
+        # Fixe Kosten
+        fixed_costs = cost_breakdown.get('fixed_costs', [])
+        summary['fixed_costs_EUR'] = sum(fix.get('total_fixed_costs_EUR', 0) for fix in fixed_costs)
+        
+        # Gesamtkosten
+        summary['total_system_costs_EUR'] = (
+            summary['investment_costs_EUR'] + 
+            summary['variable_costs_EUR'] + 
+            summary['fixed_costs_EUR']
+        )
+        
+        # Kostenverteilung
+        if summary['total_system_costs_EUR'] > 0:
+            summary['cost_shares_percent'] = {
+                'investment': (summary['investment_costs_EUR'] / summary['total_system_costs_EUR'] * 100),
+                'variable': (summary['variable_costs_EUR'] / summary['total_system_costs_EUR'] * 100),
+                'fixed': (summary['fixed_costs_EUR'] / summary['total_system_costs_EUR'] * 100)
+            }
+            
+            # Dominante Kostenart
+            max_cost_type = max(summary['cost_shares_percent'], key=summary['cost_shares_percent'].get)
+            summary['dominant_cost_type'] = max_cost_type
+        
+        return summary
+    
+    def _determine_technology_type(self, component_label: str) -> str:
+        """Bestimmt Technologie-Typ basierend auf Komponenten-Label."""
+        label_lower = component_label.lower()
+        
+        if any(word in label_lower for word in ['pv', 'solar', 'photovoltaic']):
+            return 'PV Solar'
+        elif any(word in label_lower for word in ['wind', 'wtg']):
+            return 'Wind Power'
+        elif any(word in label_lower for word in ['grid', 'import']) and 'export' not in label_lower:
+            return 'Grid Import'
+        elif any(word in label_lower for word in ['grid', 'export']):
+            return 'Grid Export'
+        elif any(word in label_lower for word in ['gas']) and any(word in label_lower for word in ['plant', 'power']):
+            return 'Gas Power Plant'
+        elif any(word in label_lower for word in ['gas', 'boiler']):
+            return 'Gas Boiler'
+        elif any(word in label_lower for word in ['heat', 'pump']):
+            return 'Heat Pump'
+        elif any(word in label_lower for word in ['chp', 'kwk']):
+            return 'CHP Plant'
+        elif any(word in label_lower for word in ['battery', 'storage']) and 'thermal' not in label_lower:
+            return 'Battery Storage'
+        elif any(word in label_lower for word in ['thermal', 'storage']):
+            return 'Thermal Storage'
+        elif any(word in label_lower for word in ['load', 'demand']):
+            return 'Electrical Load'
+        elif 'bus' in label_lower:
+            return 'Energy Bus'
+        else:
+            return 'Other Technology'
+    
+    def _save_system_export(self, system_export: Dict[str, Any]):
+        """Speichert den kompletten System-Export."""
+        try:
+            # JSON-Export
+            json_file = self.output_dir / "complete_energy_system_export.json"
+            with open(json_file, 'w', encoding='utf-8') as f:
+                json.dump(system_export, f, indent=2, default=str)
+            
+            self.logger.info(f"💾 System-Export gespeichert: {json_file.name}")
+            
+            # Excel-Export (vereinfacht)
+            self._save_system_export_excel(system_export)
+            
+            # Text-Bericht
+            self._save_system_export_report(system_export)
+            
+        except Exception as e:
+            self.logger.error(f"Fehler beim Speichern des System-Exports: {e}")
+    
+    def _save_system_export_excel(self, system_export: Dict[str, Any]):
+        """Speichert System-Export als Excel-Datei."""
+        try:
+            excel_file = self.output_dir / "energy_system_export.xlsx"
+            
+            with pd.ExcelWriter(excel_file, engine='openpyxl') as writer:
+                
+                # 1. Metadaten
+                metadata_df = pd.DataFrame([
+                    {'Parameter': k, 'Value': v} 
+                    for k, v in system_export['metadata'].items()
+                ])
+                metadata_df.to_excel(writer, sheet_name='metadata', index=False)
+                
+                # 2. Nodes-Übersicht
+                nodes_data = []
+                for node_label, node_info in system_export['nodes'].items():
+                    nodes_data.append({
+                        'label': node_label,
+                        'type': node_info['type'],
+                        'inputs_count': len(node_info['inputs']),
+                        'outputs_count': len(node_info['outputs'])
+                    })
+                
+                if nodes_data:
+                    nodes_df = pd.DataFrame(nodes_data)
+                    nodes_df.to_excel(writer, sheet_name='nodes_overview', index=False)
+                
+                # 3. Flows-Übersicht
+                flows_data = []
+                for flow in system_export['flows']:
+                    flows_data.append({
+                        'source': flow['source'],
+                        'target': flow['target'],
+                        'source_type': flow['source_type'],
+                        'target_type': flow['target_type'],
+                        'has_nominal_capacity': 'nominal_capacity' in flow['properties'],
+                        'has_variable_costs': 'variable_costs' in flow['properties'],
+                        'is_investment': flow['properties'].get('nominal_capacity', {}).get('type') == 'Investment'
+                    })
+                
+                if flows_data:
+                    flows_df = pd.DataFrame(flows_data)
+                    flows_df.to_excel(writer, sheet_name='flows_overview', index=False)
+                
+                # 4. Investment-Definitionen
+                if system_export['investments']:
+                    investments_data = []
+                    for inv in system_export['investments']:
+                        inv_params = inv['investment_parameters']
+                        investments_data.append({
+                            'component': inv['component'],
+                            'connection': inv['connection'],
+                            'ep_costs': inv_params.get('ep_costs', 0),
+                            'minimum': inv_params.get('minimum', 0),
+                            'maximum': inv_params.get('maximum', 0),
+                            'existing': inv_params.get('existing', 0)
+                        })
+                    
+                    investments_df = pd.DataFrame(investments_data)
+                    investments_df.to_excel(writer, sheet_name='investments', index=False)
+                
+                # 5. Kosten-Parameter
+                cost_params = system_export.get('cost_parameters', {})
+                for cost_type, cost_list in cost_params.items():
+                    if cost_list:
+                        cost_df = pd.DataFrame(cost_list)
+                        sheet_name = f"costs_{cost_type}"[:31]  # Excel-Sheet-Name-Limit
+                        cost_df.to_excel(writer, sheet_name=sheet_name, index=False)
+            
+            self.logger.debug(f"      📊 {excel_file.name}")
+            
+        except Exception as e:
+            self.logger.warning(f"Excel-Export des System-Exports fehlgeschlagen: {e}")
+    
+    def _save_system_export_report(self, system_export: Dict[str, Any]):
+        """Speichert System-Export als Text-Bericht."""
+        try:
+            report_file = self.output_dir / "energy_system_documentation.txt"
+            
+            with open(report_file, 'w', encoding='utf-8') as f:
+                f.write("VOLLSTÄNDIGE ENERGIESYSTEM-DOKUMENTATION\n")
+                f.write("=" * 60 + "\n")
+                f.write(f"Erstellt: {system_export['metadata']['creation_timestamp']}\n")
+                f.write(f"oemof.solph Version: {system_export['metadata']['oemof_version']}\n\n")
+                
+                # System-Übersicht
+                f.write("SYSTEM-ÜBERSICHT:\n")
+                f.write("-" * 20 + "\n")
+                stats = system_export['system_statistics']
+                f.write(f"Gesamtanzahl Nodes: {stats['total_nodes']}\n")
+                f.write(f"Gesamtanzahl Flows: {stats['total_flows']}\n")
+                f.write(f"Investment-Flows: {stats['investment_flows']}\n")
+                f.write(f"NonConvex-Flows: {stats['nonconvex_flows']}\n")
+                f.write(f"Kostenrelevante Flows: {stats['cost_relevant_flows']}\n\n")
+                
+                # Node-Typen
+                f.write("NODE-TYPEN:\n")
+                f.write("-" * 12 + "\n")
+                for node_type, count in stats['node_types'].items():
+                    f.write(f"{node_type}: {count}\n")
+                f.write("\n")
+                
+                # Zeitindex
+                timeindex_info = system_export.get('timeindex', {})
+                if timeindex_info:
+                    f.write("ZEITINDEX:\n")
+                    f.write("-" * 10 + "\n")
+                    f.write(f"Start: {timeindex_info.get('start', 'N/A')}\n")
+                    f.write(f"Ende: {timeindex_info.get('end', 'N/A')}\n")
+                    f.write(f"Perioden: {timeindex_info.get('periods', 'N/A')}\n")
+                    f.write(f"Frequenz: {timeindex_info.get('frequency', 'N/A')}\n\n")
+                
+                # Investment-Übersicht
+                investments = system_export.get('investments', [])
+                if investments:
+                    f.write("INVESTMENT-DEFINITIONEN:\n")
+                    f.write("-" * 24 + "\n")
+                    for inv in investments:
+                        f.write(f"Komponente: {inv['component']}\n")
+                        f.write(f"  Verbindung: {inv['connection']}\n")
+                        params = inv['investment_parameters']
+                        f.write(f"  EP-Costs: {params.get('ep_costs', 'N/A')} €/kW/a\n")
+                        f.write(f"  Minimum: {params.get('minimum', 'N/A')} kW\n")
+                        f.write(f"  Maximum: {params.get('maximum', 'N/A')} kW\n")
+                        f.write(f"  Existing: {params.get('existing', 'N/A')} kW\n")
+                        f.write("\n")
+                
+                # Kosten-Parameter-Übersicht
+                cost_params = system_export.get('cost_parameters', {})
+                for cost_type, cost_list in cost_params.items():
+                    if cost_list:
+                        f.write(f"{cost_type.upper()}:\n")
+                        f.write("-" * (len(cost_type) + 1) + "\n")
+                        for cost_item in cost_list:
+                            f.write(f"  {cost_item['component']}: {cost_item['connection']}\n")
+                            for key, value in cost_item.items():
+                                if key not in ['component', 'connection']:
+                                    f.write(f"    {key}: {value}\n")
+                        f.write("\n")
+            
+            self.logger.debug(f"      📋 {report_file.name}")
+            
+        except Exception as e:
+            self.logger.warning(f"Text-Bericht des System-Exports fehlgeschlagen: {e}")
+    
+    def _save_cost_breakdown(self, cost_breakdown: Dict[str, Any]):
+        """Speichert die detaillierte Kostenaufschlüsselung."""
+        try:
+            # JSON-Export
+            json_file = self.output_dir / "detailed_cost_breakdown.json"
+            with open(json_file, 'w', encoding='utf-8') as f:
+                json.dump(cost_breakdown, f, indent=2, default=str)
+            
+            # Excel-Export
+            self._save_cost_breakdown_excel(cost_breakdown)
+            
+            # Text-Bericht
+            self._save_cost_breakdown_report(cost_breakdown)
+            
+            self.logger.info(f"💾 Kostenaufschlüsselung gespeichert: {json_file.name}")
+            
+        except Exception as e:
+            self.logger.error(f"Fehler beim Speichern der Kostenaufschlüsselung: {e}")
+    
+    def _save_cost_breakdown_excel(self, cost_breakdown: Dict[str, Any]):
+        """Speichert Kostenaufschlüsselung als Excel-Datei."""
+        try:
+            excel_file = self.output_dir / "detailed_cost_breakdown.xlsx"
+            
+            with pd.ExcelWriter(excel_file, engine='openpyxl') as writer:
+                
+                # 1. Zusammenfassung
+                summary = cost_breakdown['summary']
+                summary_data = [
+                    {'Kostenart': 'Investment-Kosten', 'Betrag_EUR': summary['investment_costs_EUR'], 
+                     'Anteil_Prozent': summary['cost_shares_percent'].get('investment', 0)},
+                    {'Kostenart': 'Variable Kosten', 'Betrag_EUR': summary['variable_costs_EUR'], 
+                     'Anteil_Prozent': summary['cost_shares_percent'].get('variable', 0)},
+                    {'Kostenart': 'Fixe Kosten', 'Betrag_EUR': summary['fixed_costs_EUR'], 
+                     'Anteil_Prozent': summary['cost_shares_percent'].get('fixed', 0)},
+                    {'Kostenart': 'GESAMT', 'Betrag_EUR': summary['total_system_costs_EUR'], 
+                     'Anteil_Prozent': 100.0}
+                ]
+                
+                summary_df = pd.DataFrame(summary_data)
+                summary_df.to_excel(writer, sheet_name='cost_summary', index=False)
+                
+                # 2. Investment-Kosten Detail
+                if cost_breakdown['investment_costs']:
+                    inv_df = pd.DataFrame(cost_breakdown['investment_costs'])
+                    inv_df.to_excel(writer, sheet_name='investment_costs', index=False)
+                
+                # 3. Variable Kosten Detail
+                if cost_breakdown['variable_costs']:
+                    var_df = pd.DataFrame(cost_breakdown['variable_costs'])
+                    var_df.to_excel(writer, sheet_name='variable_costs', index=False)
+                
+                # 4. Kosten nach Technologie
+                tech_costs = cost_breakdown['cost_by_technology']
+                if tech_costs:
+                    tech_data = []
+                    for tech, costs in tech_costs.items():
+                        tech_data.append({
+                            'technology': tech,
+                            'investment_EUR': costs['investment'],
+                            'variable_EUR': costs['variable'],
+                            'total_EUR': costs['total']
+                        })
+                    
+                    tech_df = pd.DataFrame(tech_data)
+                    tech_df = tech_df.sort_values('total_EUR', ascending=False)
+                    tech_df.to_excel(writer, sheet_name='costs_by_technology', index=False)
+                
+                # 5. Kosten nach Komponente
+                comp_costs = cost_breakdown['cost_by_component']
+                if comp_costs:
+                    comp_data = []
+                    for comp, costs in comp_costs.items():
+                        comp_data.append({
+                            'component': comp,
+                            'investment_EUR': costs['investment'],
+                            'variable_EUR': costs['variable'],
+                            'total_EUR': costs['total']
+                        })
+                    
+                    comp_df = pd.DataFrame(comp_data)
+                    comp_df = comp_df.sort_values('total_EUR', ascending=False)
+                    comp_df.to_excel(writer, sheet_name='costs_by_component', index=False)
+                
+                # 6. Validierung
+                validation = cost_breakdown['cost_validation']
+                val_data = [
+                    {'Parameter': k, 'Value': v} 
+                    for k, v in validation.items() 
+                    if not isinstance(v, list)
+                ]
+                
+                if validation.get('missing_cost_data'):
+                    val_data.append({
+                        'Parameter': 'missing_cost_data_count', 
+                        'Value': len(validation['missing_cost_data'])
+                    })
+                
+                if validation.get('warnings'):
+                    val_data.append({
+                        'Parameter': 'warnings_count', 
+                        'Value': len(validation['warnings'])
+                    })
+                
+                val_df = pd.DataFrame(val_data)
+                val_df.to_excel(writer, sheet_name='validation', index=False)
+            
+            self.logger.debug(f"      📊 {excel_file.name}")
+            
+        except Exception as e:
+            self.logger.warning(f"Excel-Export der Kostenaufschlüsselung fehlgeschlagen: {e}")
+    
+    def _save_cost_breakdown_report(self, cost_breakdown: Dict[str, Any]):
+        """Speichert Kostenaufschlüsselung als Text-Bericht."""
+        try:
+            report_file = self.output_dir / "cost_breakdown_report.txt"
+            
+            with open(report_file, 'w', encoding='utf-8') as f:
+                f.write("DETAILLIERTE KOSTENAUFSCHLÜSSELUNG\n")
+                f.write("=" * 50 + "\n\n")
+                
+                # Zusammenfassung
+                summary = cost_breakdown['summary']
+                f.write("KOSTENÜBERSICHT:\n")
+                f.write("-" * 16 + "\n")
+                f.write(f"Gesamtkosten: {summary['total_system_costs_EUR']:,.2f} €\n")
+                f.write(f"Investment-Kosten: {summary['investment_costs_EUR']:,.2f} € ")
+                f.write(f"({summary['cost_shares_percent'].get('investment', 0):.1f}%)\n")
+                f.write(f"Variable Kosten: {summary['variable_costs_EUR']:,.2f} € ")
+                f.write(f"({summary['cost_shares_percent'].get('variable', 0):.1f}%)\n")
+                f.write(f"Fixe Kosten: {summary['fixed_costs_EUR']:,.2f} € ")
+                f.write(f"({summary['cost_shares_percent'].get('fixed', 0):.1f}%)\n")
+                f.write(f"Dominante Kostenart: {summary['dominant_cost_type']}\n\n")
+                
+                # Investment-Kosten Detail
+                investment_costs = cost_breakdown['investment_costs']
+                if investment_costs:
+                    f.write("INVESTMENT-KOSTEN DETAIL:\n")
+                    f.write("-" * 27 + "\n")
+                    for inv in investment_costs:
+                        f.write(f"{inv['component']} ({inv['connection']}):\n")
+                        f.write(f"  Investierte Kapazität: {inv['invested_capacity_kW']:.1f} kW\n")
+                        f.write(f"  EP-Costs: {inv['ep_costs_EUR_per_kW_per_year']:.2f} €/kW/a\n")
+                        f.write(f"  Jährliche Kosten: {inv['annual_investment_costs_EUR']:,.2f} €\n")
+                        f.write(f"  Gesamtkapazität: {inv['total_capacity_kW']:.1f} kW\n")
+                        f.write("\n")
+                
+                # Variable Kosten Detail
+                variable_costs = cost_breakdown['variable_costs']
+                if variable_costs:
+                    f.write("VARIABLE KOSTEN DETAIL:\n")
+                    f.write("-" * 24 + "\n")
+                    for var in variable_costs:
+                        f.write(f"{var['component']} ({var['connection']}):\n")
+                        f.write(f"  Energie: {var['total_energy_kWh']:,.1f} kWh\n")
+                        f.write(f"  Kosten/kWh: {var['variable_costs_EUR_per_kWh']:.4f} €/kWh\n")
+                        f.write(f"  Gesamtkosten: {var['total_variable_costs_EUR']:,.2f} €\n")
+                        f.write(f"  Volllaststunden: {var['operating_hours']:.0f} h\n")
+                        f.write(f"  Auslastung: {var['capacity_factor']:.1%}\n")
+                        f.write("\n")
+                
+                # Kosten nach Technologie
+                tech_costs = cost_breakdown['cost_by_technology']
+                if tech_costs:
+                    f.write("KOSTEN NACH TECHNOLOGIE:\n")
+                    f.write("-" * 25 + "\n")
+                    sorted_tech = sorted(tech_costs.items(), key=lambda x: x[1]['total'], reverse=True)
+                    for tech, costs in sorted_tech:
+                        f.write(f"{tech}:\n")
+                        f.write(f"  Investment: {costs['investment']:,.2f} €\n")
+                        f.write(f"  Variable: {costs['variable']:,.2f} €\n")
+                        f.write(f"  Gesamt: {costs['total']:,.2f} €\n")
+                        f.write("\n")
+                
+                # Validierung
+                validation = cost_breakdown['cost_validation']
+                f.write("VALIDIERUNG:\n")
+                f.write("-" * 12 + "\n")
+                f.write(f"Geprüfte Flows: {validation['total_flows_checked']}\n")
+                f.write(f"Flows mit Kosten: {validation['flows_with_costs']}\n")
+                f.write(f"Investment-Flows: {validation['flows_with_investment']}\n")
+                f.write(f"Berechnung vollständig: {validation['cost_calculation_complete']}\n")
+                
+                if validation['warnings']:
+                    f.write("\nWarnungen:\n")
+                    for warning in validation['warnings']:
+                        f.write(f"  ⚠️  {warning}\n")
+                
+                if validation['missing_cost_data']:
+                    f.write(f"\nFlows ohne Kostendaten ({len(validation['missing_cost_data'])}):\n")
+                    for missing in validation['missing_cost_data'][:10]:  # Nur erste 10
+                        f.write(f"  • {missing}\n")
+                    if len(validation['missing_cost_data']) > 10:
+                        f.write(f"  ... und {len(validation['missing_cost_data']) - 10} weitere\n")
+            
+            self.logger.debug(f"      📋 {report_file.name}")
+            
+        except Exception as e:
+            self.logger.warning(f"Text-Bericht der Kostenaufschlüsselung fehlgeschlagen: {e}")
+
+
+# Integration in das bestehende ResultsProcessor-Modul
+class EnhancedResultsProcessor:
+    """Erweiterte Results-Processor-Klasse mit System-Export und Kostenanalyse."""
+    
+    def __init__(self, output_dir: Path, settings: Dict[str, Any]):
+        """Initialisiert den Enhanced Results-Processor."""
+        self.output_dir = Path(output_dir)
+        self.settings = settings
+        self.logger = logging.getLogger(__name__)
+        
+        # Energy System Analyzer
+        self.system_analyzer = EnergySystemAnalyzer(output_dir, settings)
+        
+        # Output-Format
+        self.output_format = settings.get('output_format', 'xlsx')
+        self.output_files = []
+    
+    def process_results_with_system_export(self, results: Dict[str, Any], 
+                                         energy_system: Any, 
+                                         excel_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Verarbeitet Ergebnisse mit vollständigem System-Export und Kostenanalyse.
+        
+        Args:
+            results: oemof.solph Optimierungsergebnisse
             energy_system: Das optimierte EnergySystem
             excel_data: Original Excel-Daten
             
         Returns:
-            Dictionary mit verarbeiteten Ergebnissen
+            Dictionary mit erweiterten Ergebnissen
         """
-        self.logger.info("📈 Verarbeite Optimierungsergebnisse...")
+        self.logger.info("📈 Verarbeite Optimierungsergebnisse mit System-Export...")
         
         processed_results = {}
         
-        # ✅ NEUE ERWEITERTE ZIELFUNKTIONS-AUFSCHLÜSSELUNG
-        self.logger.info("💰 Erstelle detaillierte Zielfunktions-Aufschlüsselung...")
-        objective_breakdown = self._create_comprehensive_objective_breakdown(
-            results, energy_system, excel_data
-        )
-        processed_results['objective_breakdown'] = objective_breakdown
-        self._save_comprehensive_objective_breakdown(objective_breakdown)
+        # 1. Vollständiger Energiesystem-Export
+        self.logger.info("🔍 Exportiere komplettes Energiesystem...")
+        system_export = self.system_analyzer.export_complete_energy_system(energy_system, excel_data)
+        processed_results['system_export'] = system_export
         
-        # Basis-Flows extrahieren und speichern
+        # 2. Detaillierte Kostenanalyse
+        self.logger.info("💰 Berechne detaillierte Kostenaufschlüsselung...")
+        cost_breakdown = self.system_analyzer.calculate_comprehensive_costs(results, energy_system, excel_data)
+        processed_results['cost_breakdown'] = cost_breakdown
+        
+        # 3. Standard Flow-Extraktion
         flows_df = self._extract_flows(results)
         processed_results['flows'] = flows_df
         self._save_dataframe(flows_df, 'flows')
         
-        # Bus-Bilanzen berechnen
+        # 4. Bus-Bilanzen
         bus_balances = self._calculate_bus_balances(results, energy_system)
         processed_results['bus_balances'] = bus_balances
         self._save_dataframe(bus_balances, 'bus_balances')
         
-        # Investment-Ergebnisse (falls vorhanden)
+        # 5. Investment-Ergebnisse (Legacy-Kompatibilität)
         investments = self._extract_investments(results)
         if not investments.empty:
             processed_results['investments'] = investments
-            self._save_dataframe(investments, 'investments')
+            self._save_dataframe(investments, 'investments_legacy')
         
-        # Legacy-Kosten-Aufschlüsselung (für Kompatibilität)
-        costs = self._calculate_costs(results, energy_system)
-        processed_results['costs'] = costs
-        self._save_dataframe(costs, 'costs')
-        
-        # Zusammenfassung erstellen
-        summary = self._create_enhanced_summary(processed_results, energy_system, objective_breakdown)
+        # 6. Erweiterte Zusammenfassung
+        summary = self._create_comprehensive_summary(processed_results, energy_system)
         processed_results['summary'] = summary
         self._save_summary(summary)
         
         self.logger.info(f"✅ {len(self.output_files)} Ergebnisdateien erstellt")
         
         return processed_results
-    
-    def _create_comprehensive_objective_breakdown(self, results: Dict[str, Any], 
-                                                energy_system: Any, 
-                                                excel_data: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
-        """
-        ✅ VOLLSTÄNDIG ERWEITERT: Erstellt eine umfassende Aufschlüsselung der Zielfunktion.
-        
-        Returns:
-            Dictionary mit verschiedenen Aufschlüsselungs-DataFrames
-        """
-        self.logger.info("💰 Erstelle umfassende Zielfunktions-Aufschlüsselung...")
-        
-        breakdown = {}
-        
-        # 1. Investment-Kosten-Aufschlüsselung (ERWEITERT)
-        investment_costs = self._calculate_comprehensive_investment_costs(results, energy_system, excel_data)
-        breakdown['investment_costs'] = investment_costs
-        
-        # 2. Variable Kosten-Aufschlüsselung (ERWEITERT)
-        variable_costs = self._calculate_comprehensive_variable_costs(results, energy_system, excel_data)
-        breakdown['variable_costs'] = variable_costs
-        
-        # 3. Fixe Betriebskosten-Aufschlüsselung
-        fixed_costs = self._calculate_fixed_operational_costs(results, energy_system, excel_data)
-        breakdown['fixed_operational_costs'] = fixed_costs
-        
-        # ✅ NEU: 4. Component-Level Cost Breakdown
-        component_costs = self._calculate_component_level_costs(results, energy_system, excel_data)
-        breakdown['component_costs'] = component_costs
-        
-        # ✅ NEU: 5. Technology Category Breakdown
-        technology_category_costs = self._calculate_technology_category_costs(breakdown)
-        breakdown['technology_category_costs'] = technology_category_costs
-        
-        # ✅ NEU: 6. Flow-Level Cost Details
-        flow_costs = self._calculate_flow_level_costs(results, energy_system, excel_data)
-        breakdown['flow_costs'] = flow_costs
-        
-        # 7. Gesamtkostenübersicht pro Technologie (ERWEITERT)
-        technology_totals = self._calculate_enhanced_technology_totals(breakdown)
-        breakdown['technology_totals'] = technology_totals
-        
-        # 8. Kostenarten-Übersicht (ERWEITERT)
-        cost_type_summary = self._calculate_enhanced_cost_type_summary(breakdown)
-        breakdown['cost_type_summary'] = cost_type_summary
-        
-        # ✅ NEU: 9. Investment Comparison Analysis
-        investment_analysis = self._calculate_investment_analysis(breakdown, excel_data)
-        breakdown['investment_analysis'] = investment_analysis
-        
-        # ✅ NEU: 10. Cost per Energy Unit Analysis
-        cost_per_unit = self._calculate_cost_per_energy_unit(breakdown, results)
-        breakdown['cost_per_unit'] = cost_per_unit
-        
-        return breakdown
-    
-    def _calculate_comprehensive_investment_costs(self, results: Dict[str, Any], 
-                                                energy_system: Any, 
-                                                excel_data: Dict[str, Any]) -> pd.DataFrame:
-        """✅ ERWEITERT: Berechnet Investment-Kosten mit detaillierter Annuity-Analyse."""
-        investment_data = []
-        
-        for (source, target), flow_results in results.items():
-            if 'scalars' in flow_results:
-                scalars = flow_results['scalars']
-                
-                # Investment-Kapazität und -Kosten extrahieren
-                if 'invest' in scalars and scalars['invest'] > 0:
-                    invested_capacity = scalars['invest']
-                    
-                    # EP-Costs und Investment-Parameter aus System extrahieren
-                    investment_params = self._get_comprehensive_investment_params(
-                        source, target, energy_system, excel_data
-                    )
-                    
-                    if investment_params:
-                        # Jährliche Investment-Kosten berechnen
-                        annual_investment_costs = investment_params['ep_costs'] * invested_capacity
-                        
-                        # Komponentenart und Technologie bestimmen
-                        component_info = self._get_enhanced_component_info(source, target, energy_system)
-                        
-                        investment_entry = {
-                            'component_label': component_info['component_label'],
-                            'component_type': component_info['component_type'],
-                            'technology_type': component_info['technology_type'],
-                            'technology_category': component_info['technology_category'],
-                            'connection': f"{source} → {target}",
-                            'flow_direction': component_info['flow_direction'],
-                            
-                            # Kapazitäts-Informationen
-                            'invested_capacity_kW': invested_capacity,
-                            'existing_capacity_kW': investment_params.get('existing_capacity', 0),
-                            'total_capacity_kW': invested_capacity + investment_params.get('existing_capacity', 0),
-                            
-                            # Kosten-Informationen
-                            'ep_costs_EUR_per_kW_per_year': investment_params['ep_costs'],
-                            'annual_investment_costs_EUR': annual_investment_costs,
-                            
-                            # Investment-Parameter-Details
-                            'original_investment_costs_EUR_per_kW': investment_params.get('original_investment_costs'),
-                            'lifetime_years': investment_params.get('lifetime'),
-                            'interest_rate_percent': investment_params.get('interest_rate', 0) * 100,
-                            'annuity_factor': investment_params.get('annuity_factor'),
-                            
-                            # Grenzen
-                            'invest_min_kW': investment_params.get('invest_min', 0),
-                            'invest_max_kW': investment_params.get('invest_max', np.inf),
-                            
-                            # Klassifikation
-                            'cost_category': 'Investment',
-                            'cost_subcategory': self._determine_investment_subcategory(investment_params),
-                        }
-                        
-                        # Zusätzliche Metriken
-                        investment_entry.update(self._calculate_investment_metrics(
-                            invested_capacity, investment_params, scalars
-                        ))
-                        
-                        investment_data.append(investment_entry)
-        
-        df = pd.DataFrame(investment_data)
-        
-        # Sortierung nach Gesamtkosten
-        if not df.empty:
-            df = df.sort_values('annual_investment_costs_EUR', ascending=False)
-            
-            # Relative Anteile berechnen
-            total_investment_costs = df['annual_investment_costs_EUR'].sum()
-            if total_investment_costs > 0:
-                df['investment_share_percent'] = (df['annual_investment_costs_EUR'] / total_investment_costs * 100).round(2)
-        
-        return df
-    
-    def _calculate_comprehensive_variable_costs(self, results: Dict[str, Any], 
-                                              energy_system: Any, 
-                                              excel_data: Dict[str, Any]) -> pd.DataFrame:
-        """✅ ERWEITERT: Berechnet variable Kosten mit detaillierter Energie-Analyse."""
-        variable_data = []
-        
-        for (source, target), flow_results in results.items():
-            if 'sequences' in flow_results and 'scalars' in flow_results:
-                sequences = flow_results['sequences']
-                scalars = flow_results['scalars']
-                
-                if 'flow' in sequences:
-                    flow_values = sequences['flow']
-                    total_energy = flow_values.sum()
-                    
-                    # Variable Kosten aus System extrahieren
-                    var_costs_info = self._get_comprehensive_variable_costs(
-                        source, target, energy_system, excel_data
-                    )
-                    
-                    if var_costs_info and var_costs_info['var_costs'] != 0 and total_energy > 0:
-                        total_variable_costs = total_energy * var_costs_info['var_costs']
-                        
-                        # Komponentenart bestimmen
-                        component_info = self._get_enhanced_component_info(source, target, energy_system)
-                        
-                        # Zeitreihen-Statistiken
-                        flow_stats = self._calculate_flow_statistics(flow_values)
-                        
-                        variable_entry = {
-                            'component_label': component_info['component_label'],
-                            'component_type': component_info['component_type'],
-                            'technology_type': component_info['technology_type'],
-                            'technology_category': component_info['technology_category'],
-                            'connection': f"{source} → {target}",
-                            'flow_direction': component_info['flow_direction'],
-                            
-                            # Energie-Informationen
-                            'total_energy_kWh': total_energy,
-                            'total_energy_MWh': total_energy / 1000,
-                            'variable_costs_EUR_per_kWh': var_costs_info['var_costs'],
-                            'total_variable_costs_EUR': total_variable_costs,
-                            
-                            # Flow-Statistiken
-                            'max_power_kW': flow_stats['max'],
-                            'average_power_kW': flow_stats['mean'],
-                            'min_power_kW': flow_stats['min'],
-                            'std_power_kW': flow_stats['std'],
-                            'utilization_hours': flow_stats['utilization_hours'],
-                            'capacity_factor': flow_stats['capacity_factor'],
-                            
-                            # Klassifikation
-                            'cost_category': 'Variable',
-                            'cost_subcategory': self._determine_variable_cost_subcategory(var_costs_info),
-                            
-                            # Zeitbezogene Metriken
-                            'cost_per_hour_EUR': total_variable_costs / len(flow_values) if len(flow_values) > 0 else 0,
-                            'energy_per_hour_kWh': total_energy / len(flow_values) if len(flow_values) > 0 else 0,
-                        }
-                        
-                        variable_data.append(variable_entry)
-        
-        df = pd.DataFrame(variable_data)
-        
-        # Sortierung und relative Anteile
-        if not df.empty:
-            df = df.sort_values('total_variable_costs_EUR', ascending=False)
-            
-            total_variable_costs = df['total_variable_costs_EUR'].sum()
-            if total_variable_costs > 0:
-                df['variable_share_percent'] = (df['total_variable_costs_EUR'] / total_variable_costs * 100).round(2)
-        
-        return df
-    
-    def _calculate_component_level_costs(self, results: Dict[str, Any], 
-                                       energy_system: Any, 
-                                       excel_data: Dict[str, Any]) -> pd.DataFrame:
-        """✅ NEU: Berechnet Kosten auf Komponenten-Level (aggregiert über alle Flows)."""
-        component_costs = {}
-        
-        # Sammle alle Kosten pro Komponente
-        for (source, target), flow_results in results.items():
-            # Bestimme welche Komponente die "Besitzer" ist
-            component_candidates = [source, target]
-            
-            for component_label in component_candidates:
-                if str(component_label) not in component_costs:
-                    component_info = self._get_component_by_label(str(component_label), energy_system)
-                    if component_info:
-                        component_costs[str(component_label)] = {
-                            'component_label': str(component_label),
-                            'component_type': component_info['type'],
-                            'technology_type': component_info['technology_type'],
-                            'technology_category': component_info['technology_category'],
-                            'investment_costs_EUR': 0,
-                            'variable_costs_EUR': 0,
-                            'fixed_costs_EUR': 0,
-                            'total_costs_EUR': row['total_variable_costs_EUR'],
-                        'cost_per_kWh_EUR': row['total_variable_costs_EUR'] / row['total_energy_kWh'],
-                        'cost_per_MWh_EUR': row['total_variable_costs_EUR'] / (row['total_energy_kWh'] / 1000),
-                    }
-        
-        # Investment-Kosten pro Energieeinheit (basierend auf Volllaststunden)
-        if 'investment_costs' in breakdown and not breakdown['investment_costs'].empty:
-            inv_df = breakdown['investment_costs']
-            
-            for _, row in inv_df.iterrows():
-                # Schätze Volllaststunden (kann aus variable_costs abgeleitet werden)
-                estimated_full_load_hours = self._estimate_full_load_hours(
-                    row['component_label'], breakdown.get('variable_costs', pd.DataFrame())
-                )
-                
-                if estimated_full_load_hours > 0:
-                    estimated_annual_energy = row['invested_capacity_kW'] * estimated_full_load_hours
-                    
-                    cost_per_unit_data.append({
-                        'technology_type': row['technology_type'],
-                        'cost_category': 'Investment (amortized)',
-                        'total_energy_kWh': estimated_annual_energy,
-                        'total_costs_EUR': row['annual_investment_costs_EUR'],
-                        'cost_per_kWh_EUR': row['annual_investment_costs_EUR'] / estimated_annual_energy,
-                        'cost_per_MWh_EUR': row['annual_investment_costs_EUR'] / (estimated_annual_energy / 1000),
-                        'full_load_hours_estimate': estimated_full_load_hours,
-                    })
-        
-        df = pd.DataFrame(cost_per_unit_data)
-        
-        if not df.empty:
-            df = df.sort_values('cost_per_kWh_EUR', ascending=False)
-        
-        return df
-    
-    def _get_comprehensive_investment_params(self, source, target, energy_system, excel_data):
-        """Extrahiert umfassende Investment-Parameter aus dem System."""
-        try:
-            # Suche Investment-Flow im EnergySystem
-            for node in energy_system.nodes:
-                if hasattr(node, 'outputs'):
-                    for output_node, flow in node.outputs.items():
-                        if str(node.label) == str(source) and str(output_node.label) == str(target):
-                            if hasattr(flow, 'nominal_capacity') and hasattr(flow.nominal_capacity, 'ep_costs'):
-                                return self._extract_investment_details(flow.nominal_capacity, source, excel_data)
-                
-                if hasattr(node, 'inputs'):
-                    for input_node, flow in node.inputs.items():
-                        if str(input_node.label) == str(source) and str(node.label) == str(target):
-                            if hasattr(flow, 'nominal_capacity') and hasattr(flow.nominal_capacity, 'ep_costs'):
-                                return self._extract_investment_details(flow.nominal_capacity, source, excel_data)
-        except Exception as e:
-            self.logger.debug(f"Fehler beim Extrahieren der Investment-Parameter: {e}")
-        
-        return None
-    
-    def _extract_investment_details(self, investment_obj, component_label, excel_data):
-        """Extrahiert detaillierte Investment-Informationen."""
-        details = {
-            'ep_costs': investment_obj.ep_costs,
-            'existing_capacity': getattr(investment_obj, 'existing', 0),
-            'invest_min': getattr(investment_obj, 'minimum', 0),
-            'invest_max': getattr(investment_obj, 'maximum', np.inf),
-        }
-        
-        # Versuche Original-Parameter aus Excel-Daten zu rekonstruieren
-        original_params = self._find_original_investment_params(component_label, excel_data)
-        if original_params:
-            details.update(original_params)
-            
-            # Berechne Annuity-Faktor falls Lifetime und Interest Rate verfügbar
-            if 'lifetime' in original_params and 'interest_rate' in original_params:
-                details['annuity_factor'] = self._calculate_annuity_factor(
-                    original_params['lifetime'], original_params['interest_rate']
-                )
-        
-        return details
-    
-    def _find_original_investment_params(self, component_label, excel_data):
-        """Sucht Original-Investment-Parameter in Excel-Daten."""
-        component_label_str = str(component_label)
-        
-        # Durchsuche alle relevanten Sheets
-        for sheet_name in ['sources', 'sinks', 'simple_transformers']:
-            if sheet_name in excel_data:
-                df = excel_data[sheet_name]
-                
-                # Finde Komponente
-                matching_rows = df[df['label'] == component_label_str]
-                
-                if not matching_rows.empty:
-                    row = matching_rows.iloc[0]
-                    
-                    params = {}
-                    
-                    # Investment-Kosten
-                    if 'investment_costs' in row and pd.notna(row['investment_costs']):
-                        params['original_investment_costs'] = float(row['investment_costs'])
-                    
-                    # Lifetime
-                    if 'lifetime' in row and pd.notna(row['lifetime']):
-                        params['lifetime'] = float(row['lifetime'])
-                    
-                    # Interest Rate
-                    if 'interest_rate' in row and pd.notna(row['interest_rate']):
-                        params['interest_rate'] = float(row['interest_rate'])
-                    
-                    return params if params else None
-        
-        return None
-    
-    def _calculate_annuity_factor(self, lifetime, interest_rate):
-        """Berechnet den Annuity-Faktor."""
-        try:
-            if interest_rate == 0:
-                return 1 / lifetime
-            else:
-                return (interest_rate * (1 + interest_rate) ** lifetime) / ((1 + interest_rate) ** lifetime - 1)
-        except:
-            return None
-    
-    def _get_comprehensive_variable_costs(self, source, target, energy_system, excel_data):
-        """Extrahiert umfassende Variable-Kosten-Informationen."""
-        try:
-            # Suche im EnergySystem
-            for node in energy_system.nodes:
-                if hasattr(node, 'outputs'):
-                    for output_node, flow in node.outputs.items():
-                        if str(node.label) == str(source) and str(output_node.label) == str(target):
-                            if hasattr(flow, 'variable_costs'):
-                                return {
-                                    'var_costs': flow.variable_costs,
-                                    'source': 'flow_attribute'
-                                }
-                
-                if hasattr(node, 'inputs'):
-                    for input_node, flow in node.inputs.items():
-                        if str(input_node.label) == str(source) and str(node.label) == str(target):
-                            if hasattr(flow, 'variable_costs'):
-                                return {
-                                    'var_costs': flow.variable_costs,
-                                    'source': 'flow_attribute'
-                                }
-        except Exception as e:
-            self.logger.debug(f"Fehler beim Extrahieren der variablen Kosten: {e}")
-        
-        return {'var_costs': 0, 'source': 'not_found'}
-    
-    def _get_enhanced_component_info(self, source, target, energy_system):
-        """Erweiterte Komponenten-Informationen."""
-        # Bestimme Haupt-Komponente (nicht Bus)
-        component_label = str(source)
-        flow_direction = 'output'
-        
-        # Prüfe ob source ein Bus ist
-        if self._is_bus(source, energy_system):
-            component_label = str(target)
-            flow_direction = 'input'
-        
-        # Finde Komponente im System
-        component_info = self._get_component_by_label(component_label, energy_system)
-        
-        if component_info:
-            return {
-                'component_label': component_label,
-                'component_type': component_info['type'],
-                'technology_type': component_info['technology_type'],
-                'technology_category': component_info['technology_category'],
-                'flow_direction': flow_direction
-            }
-        else:
-            # Fallback
-            return {
-                'component_label': component_label,
-                'component_type': 'Unknown',
-                'technology_type': self._guess_technology_type(component_label),
-                'technology_category': self._guess_technology_category(component_label),
-                'flow_direction': flow_direction
-            }
-    
-    def _get_component_by_label(self, label, energy_system):
-        """Findet Komponente im EnergySystem nach Label."""
-        try:
-            for node in energy_system.nodes:
-                if str(node.label) == label:
-                    return {
-                        'label': label,
-                        'type': type(node).__name__,
-                        'node': node,
-                        'technology_type': self._determine_technology_type(node),
-                        'technology_category': self._determine_technology_category(node)
-                    }
-        except:
-            pass
-        return None
-    
-    def _is_bus(self, label, energy_system):
-        """Prüft ob Label ein Bus ist."""
-        try:
-            for node in energy_system.nodes:
-                if str(node.label) == str(label):
-                    return isinstance(node, solph.buses.Bus)
-        except:
-            pass
-        return 'bus' in str(label).lower()
-    
-    def _determine_technology_type(self, node):
-        """Bestimmt detaillierten Technologie-Typ."""
-        label = str(node.label).lower()
-        node_type = type(node).__name__.lower()
-        
-        # Detaillierte Technologie-Erkennung
-        if any(word in label for word in ['pv', 'solar', 'photovoltaic']):
-            return 'PV Solar'
-        elif any(word in label for word in ['wind', 'wtg']):
-            return 'Wind Power'
-        elif any(word in label for word in ['grid', 'import']) and 'source' in node_type:
-            return 'Grid Import'
-        elif any(word in label for word in ['grid', 'export']) and 'sink' in node_type:
-            return 'Grid Export'
-        elif any(word in label for word in ['gas']) and any(word in label for word in ['plant', 'power', 'engine']):
-            return 'Gas Power Plant'
-        elif any(word in label for word in ['gas', 'boiler']):
-            return 'Gas Boiler'
-        elif any(word in label for word in ['heat', 'pump', 'hp']):
-            return 'Heat Pump'
-        elif any(word in label for word in ['chp', 'kwk', 'cogeneration']):
-            return 'CHP Plant'
-        elif any(word in label for word in ['battery', 'storage']) and 'el' in label:
-            return 'Battery Storage'
-        elif any(word in label for word in ['thermal', 'storage']) and 'heat' in label:
-            return 'Thermal Storage'
-        elif any(word in label for word in ['load', 'demand']) and 'el' in label:
-            return 'Electrical Load'
-        elif any(word in label for word in ['load', 'demand']) and 'heat' in label:
-            return 'Heat Load'
-        elif 'bus' in node_type:
-            if 'el' in label:
-                return 'Electrical Bus'
-            elif 'heat' in label:
-                return 'Heat Bus'
-            elif 'gas' in label:
-                return 'Gas Bus'
-            else:
-                return 'Energy Bus'
-        else:
-            return f'{node_type.title()} Component'
-    
-    def _determine_technology_category(self, node):
-        """Bestimmt Technologie-Kategorie."""
-        tech_type = self._determine_technology_type(node)
-        
-        renewable_sources = ['PV Solar', 'Wind Power']
-        conventional_sources = ['Gas Power Plant', 'Grid Import']
-        conversion_technologies = ['Heat Pump', 'Gas Boiler', 'CHP Plant']
-        storage_technologies = ['Battery Storage', 'Thermal Storage']
-        demand_components = ['Electrical Load', 'Heat Load', 'Grid Export']
-        system_components = ['Electrical Bus', 'Heat Bus', 'Gas Bus', 'Energy Bus']
-        
-        if tech_type in renewable_sources:
-            return 'Renewable Generation'
-        elif tech_type in conventional_sources:
-            return 'Conventional Generation'
-        elif tech_type in conversion_technologies:
-            return 'Conversion Technology'
-        elif tech_type in storage_technologies:
-            return 'Energy Storage'
-        elif tech_type in demand_components:
-            return 'Demand/Export'
-        elif tech_type in system_components:
-            return 'System Infrastructure'
-        else:
-            return 'Other Technology'
-    
-    def _guess_technology_type(self, label):
-        """Errät Technologie-Typ basierend auf Label (Fallback)."""
-        label_lower = str(label).lower()
-        
-        if any(word in label_lower for word in ['pv', 'solar']):
-            return 'PV Solar'
-        elif any(word in label_lower for word in ['wind']):
-            return 'Wind Power'
-        elif any(word in label_lower for word in ['grid', 'import']):
-            return 'Grid Import'
-        elif any(word in label_lower for word in ['load', 'demand']):
-            return 'Load'
-        elif any(word in label_lower for word in ['bus']):
-            return 'Bus'
-        else:
-            return 'Unknown Technology'
-    
-    def _guess_technology_category(self, label):
-        """Errät Technologie-Kategorie (Fallback)."""
-        tech_type = self._guess_technology_type(label)
-        
-        if tech_type in ['PV Solar', 'Wind Power']:
-            return 'Renewable Generation'
-        elif tech_type in ['Grid Import']:
-            return 'Conventional Generation'
-        elif tech_type in ['Load']:
-            return 'Demand/Export'
-        elif tech_type in ['Bus']:
-            return 'System Infrastructure'
-        else:
-            return 'Other Technology'
-    
-    def _calculate_flow_statistics(self, flow_values):
-        """Berechnet Flow-Statistiken."""
-        stats = {
-            'max': flow_values.max(),
-            'min': flow_values.min(),
-            'mean': flow_values.mean(),
-            'std': flow_values.std(),
-            'utilization_hours': (flow_values > 0).sum(),
-            'capacity_factor': 0
-        }
-        
-        if stats['max'] > 0:
-            stats['capacity_factor'] = stats['mean'] / stats['max']
-        
-        return stats
-    
-    def _determine_investment_subcategory(self, investment_params):
-        """Bestimmt Investment-Unterkategorie."""
-        if investment_params.get('lifetime') and investment_params.get('interest_rate'):
-            return 'Annuity-based Investment'
-        else:
-            return 'Direct Cost Investment'
-    
-    def _determine_variable_cost_subcategory(self, var_costs_info):
-        """Bestimmt Variable-Kosten-Unterkategorie."""
-        var_costs = var_costs_info['var_costs']
-        
-        if var_costs > 0:
-            return 'Operating Costs'
-        elif var_costs < 0:
-            return 'Revenue/Feed-in'
-        else:
-            return 'No Variable Costs'
-    
-    def _determine_flow_type(self, source, target, energy_system):
-        """Bestimmt Flow-Typ."""
-        source_is_bus = self._is_bus(source, energy_system)
-        target_is_bus = self._is_bus(target, energy_system)
-        
-        if source_is_bus and target_is_bus:
-            return 'Bus-to-Bus'
-        elif source_is_bus:
-            return 'Bus-to-Component'
-        elif target_is_bus:
-            return 'Component-to-Bus'
-        else:
-            return 'Component-to-Component'
-    
-    def _estimate_full_load_hours(self, component_label, variable_costs_df):
-        """Schätzt Volllaststunden basierend auf Variable-Kosten-Daten."""
-        if variable_costs_df.empty:
-            return 2000  # Default-Schätzung
-        
-        # Suche Komponente in Variable-Kosten
-        matching = variable_costs_df[variable_costs_df['component_label'] == component_label]
-        
-        if not matching.empty:
-            row = matching.iloc[0]
-            if row['max_power_kW'] > 0:
-                return row['total_energy_kWh'] / row['max_power_kW']
-        
-        # Fallback-Schätzungen nach Technologie-Typ
-        component_label_lower = str(component_label).lower()
-        
-        if any(word in component_label_lower for word in ['pv', 'solar']):
-            return 1000  # Typisch für PV
-        elif any(word in component_label_lower for word in ['wind']):
-            return 2500  # Typisch für Wind
-        elif any(word in component_label_lower for word in ['gas', 'plant']):
-            return 4000  # Typisch für Gas-Kraftwerk
-        else:
-            return 3000  # Allgemeine Schätzung
-    
-    def _calculate_fixed_operational_costs(self, results, energy_system, excel_data):
-        """Berechnet fixe Betriebskosten (erweiterte Implementierung)."""
-        fixed_data = []
-        
-        # Hier könnte eine erweiterte Implementierung für fixe Kosten stehen
-        # Aktuell als Platzhalter, da fixe Kosten oft nicht im Standard oemof.solph verwendet werden
-        
-        return pd.DataFrame(fixed_data)
-    
-    def _calculate_enhanced_technology_totals(self, breakdown):
-        """Erweiterte Technologie-Gesamtkosten."""
-        technology_totals = []
-        
-        # Sammle alle Technologien
-        all_technologies = set()
-        for df in breakdown.values():
-            if isinstance(df, pd.DataFrame) and 'technology_type' in df.columns:
-                all_technologies.update(df['technology_type'].unique())
-        
-        for technology in all_technologies:
-            investment_total = 0
-            variable_total = 0
-            fixed_total = 0
-            
-            # Investment-Kosten
-            if 'investment_costs' in breakdown and not breakdown['investment_costs'].empty:
-                inv_df = breakdown['investment_costs']
-                tech_inv = inv_df[inv_df['technology_type'] == technology]
-                investment_total = tech_inv['annual_investment_costs_EUR'].sum()
-            
-            # Variable Kosten
-            if 'variable_costs' in breakdown and not breakdown['variable_costs'].empty:
-                var_df = breakdown['variable_costs']
-                tech_var = var_df[var_df['technology_type'] == technology]
-                variable_total = tech_var['total_variable_costs_EUR'].sum()
-            
-            # Fixe Kosten
-            if 'fixed_operational_costs' in breakdown and not breakdown['fixed_operational_costs'].empty:
-                fix_df = breakdown['fixed_operational_costs']
-                tech_fix = fix_df[fix_df['technology_type'] == technology]
-                fixed_total = tech_fix['total_fixed_costs_EUR'].sum()
-            
-            total_costs = investment_total + variable_total + fixed_total
-            
-            if total_costs > 0:  # Nur Technologien mit Kosten
-                # Zusätzliche Metriken
-                total_capacity = 0
-                total_energy = 0
-                
-                if 'investment_costs' in breakdown:
-                    tech_capacity = breakdown['investment_costs'][
-                        breakdown['investment_costs']['technology_type'] == technology
-                    ]['invested_capacity_kW'].sum()
-                    total_capacity += tech_capacity
-                
-                if 'variable_costs' in breakdown:
-                    tech_energy = breakdown['variable_costs'][
-                        breakdown['variable_costs']['technology_type'] == technology
-                    ]['total_energy_kWh'].sum()
-                    total_energy += tech_energy
-                
-                technology_totals.append({
-                    'technology_type': technology,
-                    'investment_costs_EUR': investment_total,
-                    'variable_costs_EUR': variable_total,
-                    'fixed_operational_costs_EUR': fixed_total,
-                    'total_costs_EUR': total_costs,
-                    'total_capacity_kW': total_capacity,
-                    'total_energy_kWh': total_energy,
-                    'specific_costs_EUR_per_kW': total_costs / total_capacity if total_capacity > 0 else 0,
-                    'specific_costs_EUR_per_kWh': total_costs / total_energy if total_energy > 0 else 0,
-                    'share_of_total_percent': 0  # Wird später berechnet
-                })
-        
-        df = pd.DataFrame(technology_totals)
-        
-        # Prozentualen Anteil berechnen
-        if not df.empty:
-            total_system_costs = df['total_costs_EUR'].sum()
-            if total_system_costs > 0:
-                df['share_of_total_percent'] = (df['total_costs_EUR'] / total_system_costs * 100).round(2)
-            
-            # Nach Gesamtkosten sortieren
-            df = df.sort_values('total_costs_EUR', ascending=False)
-        
-        return df
-    
-    def _calculate_enhanced_cost_type_summary(self, breakdown):
-        """Erweiterte Kostenarten-Übersicht."""
-        cost_summary = []
-        
-        # Investment-Kosten
-        if 'investment_costs' in breakdown and not breakdown['investment_costs'].empty:
-            inv_total = breakdown['investment_costs']['annual_investment_costs_EUR'].sum()
-            inv_count = len(breakdown['investment_costs'])
-            cost_summary.append({
-                'cost_type': 'Investment Costs',
-                'description': 'Annualized investment costs (EP-Costs)',
-                'total_EUR': inv_total,
-                'components_count': inv_count,
-                'avg_cost_per_component_EUR': inv_total / inv_count if inv_count > 0 else 0,
-                'share_percent': 0
-            })
-        
-        # Variable Kosten
-        if 'variable_costs' in breakdown and not breakdown['variable_costs'].empty:
-            var_total = breakdown['variable_costs']['total_variable_costs_EUR'].sum()
-            var_count = len(breakdown['variable_costs'])
-            total_energy = breakdown['variable_costs']['total_energy_kWh'].sum()
-            cost_summary.append({
-                'cost_type': 'Variable Costs',
-                'description': 'Energy-dependent operational costs',
-                'total_EUR': var_total,
-                'components_count': var_count,
-                'avg_cost_per_component_EUR': var_total / var_count if var_count > 0 else 0,
-                'avg_cost_per_kWh_EUR': var_total / total_energy if total_energy > 0 else 0,
-                'total_energy_kWh': total_energy,
-                'share_percent': 0
-            })
-        
-        # Fixe Kosten
-        if 'fixed_operational_costs' in breakdown and not breakdown['fixed_operational_costs'].empty:
-            fix_total = breakdown['fixed_operational_costs']['total_fixed_costs_EUR'].sum()
-            fix_count = len(breakdown['fixed_operational_costs'])
-            if fix_total > 0:
-                cost_summary.append({
-                    'cost_type': 'Fixed Operational Costs',
-                    'description': 'Capacity-dependent operational costs',
-                    'total_EUR': fix_total,
-                    'components_count': fix_count,
-                    'avg_cost_per_component_EUR': fix_total / fix_count if fix_count > 0 else 0,
-                    'share_percent': 0
-                })
-        
-        df = pd.DataFrame(cost_summary)
-        
-        # Prozentualen Anteil berechnen
-        if not df.empty:
-            total_costs = df['total_EUR'].sum()
-            if total_costs > 0:
-                df['share_percent'] = (df['total_EUR'] / total_costs * 100).round(2)
-        
-        return df
-    
-    def _save_comprehensive_objective_breakdown(self, breakdown: Dict[str, pd.DataFrame]):
-        """Speichert die umfassende Zielfunktions-Aufschlüsselung als Excel-Datei."""
-        try:
-            excel_file = self.output_dir / "comprehensive_objective_breakdown.xlsx"
-            
-            with pd.ExcelWriter(excel_file, engine='openpyxl') as writer:
-                
-                # Sheet-Reihenfolge für bessere Übersicht
-                sheet_order = [
-                    ('cost_type_summary', 'Cost Type Summary'),
-                    ('technology_totals', 'Technology Totals'),
-                    ('technology_category_costs', 'Technology Categories'),
-                    ('component_costs', 'Component Costs'),
-                    ('investment_costs', 'Investment Details'),
-                    ('variable_costs', 'Variable Cost Details'),
-                    ('fixed_operational_costs', 'Fixed Cost Details'),
-                    ('flow_costs', 'Flow-Level Costs'),
-                    ('investment_analysis', 'Investment Analysis'),
-                    ('cost_per_unit', 'Cost per Energy Unit')
-                ]
-                
-                for breakdown_key, sheet_name in sheet_order:
-                    if breakdown_key in breakdown and not breakdown[breakdown_key].empty:
-                        df = breakdown[breakdown_key]
-                        
-                        # Formatierung für bessere Lesbarkeit
-                        df_formatted = self._format_dataframe_for_excel(df)
-                        
-                        df_formatted.to_excel(writer, sheet_name=sheet_name, index=False)
-                        
-                        # Auto-adjust column widths
-                        worksheet = writer.sheets[sheet_name]
-                        for column in worksheet.columns:
-                            max_length = 0
-                            column = [cell for cell in column]
-                            for cell in column:
-                                try:
-                                    if len(str(cell.value)) > max_length:
-                                        max_length = len(str(cell.value))
-                                except:
-                                    pass
-                            adjusted_width = min(max_length + 2, 50)
-                            worksheet.column_dimensions[column[0].column_letter].width = adjusted_width
-            
-            self.output_files.append(excel_file)
-            self.logger.info(f"💰 Umfassende Zielfunktions-Aufschlüsselung gespeichert: {excel_file.name}")
-            
-        except Exception as e:
-            self.logger.error(f"Fehler beim Speichern der umfassenden Zielfunktions-Aufschlüsselung: {e}")
-    
-    def _format_dataframe_for_excel(self, df):
-        """Formatiert DataFrame für bessere Excel-Darstellung."""
-        df_formatted = df.copy()
-        
-        # Runde numerische Spalten
-        numeric_columns = df_formatted.select_dtypes(include=[np.number]).columns
-        for col in numeric_columns:
-            if 'percent' in col.lower():
-                df_formatted[col] = df_formatted[col].round(2)
-            elif 'EUR' in col or 'costs' in col.lower():
-                df_formatted[col] = df_formatted[col].round(2)
-            elif 'kW' in col or 'capacity' in col.lower():
-                df_formatted[col] = df_formatted[col].round(1)
-            elif 'factor' in col.lower():
-                df_formatted[col] = df_formatted[col].round(4)
-            else:
-                df_formatted[col] = df_formatted[col].round(3)
-        
-        return df_formatted
-    
-    def _create_enhanced_summary(self, processed_results, energy_system, objective_breakdown):
-        """Erstellt eine erweiterte Ergebnis-Zusammenfassung."""
-        summary = {
-            'simulation_period': {},
-            'energy_flows': {},
-            'comprehensive_costs': {},
-            'investments': {},
-            'system_info': {},
-            'cost_breakdown_summary': {}
-        }
-        
-        # Zeitraum
-        if hasattr(energy_system, 'timeindex'):
-            timeindex = energy_system.timeindex
-            summary['simulation_period'] = {
-                'start': timeindex[0].strftime('%Y-%m-%d %H:%M'),
-                'end': timeindex[-1].strftime('%Y-%m-%d %H:%M'),
-                'duration_hours': len(timeindex),
-                'resolution': pd.infer_freq(timeindex) or 'variable'
-            }
-        
-        # Energie-Flüsse
-        if 'flows' in processed_results and not processed_results['flows'].empty:
-            flows_df = processed_results['flows']
-            summary['energy_flows'] = {
-                'total_energy_MWh': flows_df.sum().sum() / 1000,
-                'peak_power_MW': flows_df.max().max() / 1000,
-                'number_of_flows': len(flows_df.columns)
-            }
-        
-        # ✅ ERWEITERTE KOSTEN-ZUSAMMENFASSUNG
-        if 'cost_type_summary' in objective_breakdown and not objective_breakdown['cost_type_summary'].empty:
-            cost_summary = objective_breakdown['cost_type_summary']
-            total_costs = cost_summary['total_EUR'].sum()
-            
-            summary['comprehensive_costs'] = {
-                'total_system_costs_EUR': total_costs,
-                'investment_costs_EUR': 0,
-                'variable_costs_EUR': 0,
-                'fixed_costs_EUR': 0
-            }
-            
-            # Einzelne Kostenarten
-            for _, row in cost_summary.iterrows():
-                if 'Investment' in row['cost_type']:
-                    summary['comprehensive_costs']['investment_costs_EUR'] = row['total_EUR']
-                elif 'Variable' in row['cost_type']:
-                    summary['comprehensive_costs']['variable_costs_EUR'] = row['total_EUR']
-                elif 'Fixed' in row['cost_type']:
-                    summary['comprehensive_costs']['fixed_costs_EUR'] = row['total_EUR']
-        
-        # Investment-Zusammenfassung
-        if 'investment_costs' in objective_breakdown and not objective_breakdown['investment_costs'].empty:
-            investments_df = objective_breakdown['investment_costs']
-            summary['investments'] = {
-                'number_of_investments': len(investments_df),
-                'total_invested_capacity_kW': investments_df['invested_capacity_kW'].sum(),
-                'total_annual_investment_costs_EUR': investments_df['annual_investment_costs_EUR'].sum(),
-                'average_ep_costs_EUR_per_kW': investments_df['ep_costs_EUR_per_kW_per_year'].mean()
-            }
-        
-        # Kosten-Aufschlüsselung-Zusammenfassung
-        if 'technology_totals' in objective_breakdown and not objective_breakdown['technology_totals'].empty:
-            tech_totals = objective_breakdown['technology_totals']
-            
-            # Top 3 Technologien nach Kosten
-            top_technologies = tech_totals.head(3)
-            summary['cost_breakdown_summary'] = {
-                'most_expensive_technology': {
-                    'name': top_technologies.iloc[0]['technology_type'] if len(top_technologies) > 0 else 'N/A',
-                    'costs_EUR': top_technologies.iloc[0]['total_costs_EUR'] if len(top_technologies) > 0 else 0,
-                    'share_percent': top_technologies.iloc[0]['share_of_total_percent'] if len(top_technologies) > 0 else 0
-                },
-                'top_3_technologies': [
-                    {
-                        'technology': row['technology_type'],
-                        'costs_EUR': row['total_costs_EUR'],
-                        'share_percent': row['share_of_total_percent']
-                    }
-                    for _, row in top_technologies.iterrows()
-                ]
-            }
-        
-        # System-Info
-        if hasattr(energy_system, 'nodes'):
-            nodes = energy_system.nodes
-            summary['system_info'] = {
-                'total_components': len(nodes),
-                'buses': len([n for n in nodes if isinstance(n, solph.buses.Bus)]),
-                'sources': len([n for n in nodes if isinstance(n, solph.components.Source)]),
-                'sinks': len([n for n in nodes if isinstance(n, solph.components.Sink)]),
-                'converters': len([n for n in nodes if isinstance(n, solph.components.Converter)])
-            }
-        
-        return summary
-    
-    # ===== LEGACY METHODS (für Kompatibilität) =====
     
     def _extract_flows(self, results: Dict[str, Any]) -> pd.DataFrame:
         """Extrahiert alle Flow-Werte aus den Ergebnissen."""
@@ -1112,7 +1356,7 @@ class EnhancedResultsProcessor:
             return pd.DataFrame()
     
     def _extract_investments(self, results: Dict[str, Any]) -> pd.DataFrame:
-        """Extrahiert Investment-Ergebnisse."""
+        """Extrahiert Investment-Ergebnisse (Legacy-Kompatibilität)."""
         investment_data = []
         
         for (source, target), flow_results in results.items():
@@ -1131,44 +1375,153 @@ class EnhancedResultsProcessor:
         
         return pd.DataFrame(investment_data)
     
-    def _calculate_costs(self, results: Dict[str, Any], energy_system: Any) -> pd.DataFrame:
-        """Berechnet Kostenaufschlüsselung (Legacy-Version für Kompatibilität)."""
-        cost_data = []
+    def _create_comprehensive_summary(self, processed_results: Dict[str, Any], 
+                                    energy_system: Any) -> Dict[str, Any]:
+        """Erstellt eine umfassende Ergebnis-Zusammenfassung."""
+        summary = {
+            'simulation_info': {},
+            'system_overview': {},
+            'cost_summary': {},
+            'investment_summary': {},
+            'energy_flows': {},
+            'performance_metrics': {}
+        }
         
-        for (source, target), flow_results in results.items():
-            if 'sequences' in flow_results and 'scalars' in flow_results:
-                sequences = flow_results['sequences']
-                scalars = flow_results['scalars']
-                
-                # Variable Kosten
-                if 'flow' in sequences:
-                    flow_values = sequences['flow']
-                    
-                    # Variable Kosten aus Flow-Eigenschaften extrahieren (vereinfacht)
-                    variable_costs = scalars.get('variable_costs', 0)
-                    if variable_costs != 0:
-                        total_variable_costs = flow_values.sum() * variable_costs
-                        
-                        cost_data.append({
-                            'source': str(source),
-                            'target': str(target),
-                            'cost_type': 'variable',
-                            'total_cost': total_variable_costs,
-                            'unit': '€'
-                        })
-                
-                # Investment-Kosten
-                investment_costs = scalars.get('investment_costs', 0)
-                if investment_costs != 0:
-                    cost_data.append({
-                        'source': str(source),
-                        'target': str(target),
-                        'cost_type': 'investment',
-                        'total_cost': investment_costs,
-                        'unit': '€'
-                    })
+        # Simulation-Info
+        if hasattr(energy_system, 'timeindex'):
+            timeindex = energy_system.timeindex
+            summary['simulation_info'] = {
+                'start_date': timeindex[0].strftime('%Y-%m-%d %H:%M'),
+                'end_date': timeindex[-1].strftime('%Y-%m-%d %H:%M'),
+                'duration_hours': len(timeindex),
+                'resolution': pd.infer_freq(timeindex) or 'variable',
+                'total_periods': len(timeindex)
+            }
         
-        return pd.DataFrame(cost_data)
+        # System-Übersicht
+        system_export = processed_results.get('system_export', {})
+        system_stats = system_export.get('system_statistics', {})
+        
+        summary['system_overview'] = {
+            'total_nodes': system_stats.get('total_nodes', 0),
+            'total_flows': system_stats.get('total_flows', 0),
+            'investment_flows': system_stats.get('investment_flows', 0),
+            'cost_relevant_flows': system_stats.get('cost_relevant_flows', 0),
+            'node_types': system_stats.get('node_types', {})
+        }
+        
+        # Kosten-Zusammenfassung
+        cost_breakdown = processed_results.get('cost_breakdown', {})
+        cost_summary = cost_breakdown.get('summary', {})
+        
+        summary['cost_summary'] = {
+            'total_system_costs_EUR': cost_summary.get('total_system_costs_EUR', 0),
+            'investment_costs_EUR': cost_summary.get('investment_costs_EUR', 0),
+            'variable_costs_EUR': cost_summary.get('variable_costs_EUR', 0),
+            'fixed_costs_EUR': cost_summary.get('fixed_costs_EUR', 0),
+            'dominant_cost_type': cost_summary.get('dominant_cost_type', 'unknown'),
+            'cost_shares_percent': cost_summary.get('cost_shares_percent', {})
+        }
+        
+        # Investment-Zusammenfassung
+        investment_costs = cost_breakdown.get('investment_costs', [])
+        if investment_costs:
+            total_invested_capacity = sum(inv['invested_capacity_kW'] for inv in investment_costs)
+            avg_ep_costs = np.mean([inv['ep_costs_EUR_per_kW_per_year'] for inv in investment_costs])
+            
+            summary['investment_summary'] = {
+                'number_of_investments': len(investment_costs),
+                'total_invested_capacity_kW': total_invested_capacity,
+                'total_annual_investment_costs_EUR': cost_summary.get('investment_costs_EUR', 0),
+                'average_ep_costs_EUR_per_kW': avg_ep_costs,
+                'investment_components': [inv['component'] for inv in investment_costs]
+            }
+        else:
+            summary['investment_summary'] = {
+                'number_of_investments': 0,
+                'total_invested_capacity_kW': 0,
+                'total_annual_investment_costs_EUR': 0,
+                'average_ep_costs_EUR_per_kW': 0,
+                'investment_components': []
+            }
+        
+        # Energie-Flüsse
+        flows_df = processed_results.get('flows', pd.DataFrame())
+        if not flows_df.empty:
+            total_energy = flows_df.sum().sum()
+            peak_power = flows_df.max().max()
+            
+            summary['energy_flows'] = {
+                'total_energy_MWh': total_energy / 1000,
+                'peak_power_MW': peak_power / 1000,
+                'average_power_MW': (total_energy / len(flows_df)) / 1000 if len(flows_df) > 0 else 0,
+                'number_of_flows': len(flows_df.columns)
+            }
+        else:
+            summary['energy_flows'] = {
+                'total_energy_MWh': 0,
+                'peak_power_MW': 0,
+                'average_power_MW': 0,
+                'number_of_flows': 0
+            }
+        
+        # Performance-Metriken
+        validation = cost_breakdown.get('cost_validation', {})
+        
+        summary['performance_metrics'] = {
+            'cost_calculation_complete': validation.get('cost_calculation_complete', False),
+            'flows_with_costs_percent': (
+                (validation.get('flows_with_costs', 0) / validation.get('total_flows_checked', 1)) * 100
+                if validation.get('total_flows_checked', 0) > 0 else 0
+            ),
+            'system_complexity_score': self._calculate_complexity_score(system_stats),
+            'data_quality_score': self._calculate_data_quality_score(validation)
+        }
+        
+        return summary
+    
+    def _calculate_complexity_score(self, system_stats: Dict[str, Any]) -> float:
+        """Berechnet einen Komplexitäts-Score für das System."""
+        score = 0
+        
+        # Basis-Komplexität: Anzahl Nodes und Flows
+        score += system_stats.get('total_nodes', 0) * 1.0
+        score += system_stats.get('total_flows', 0) * 0.5
+        
+        # Investment erhöht Komplexität
+        score += system_stats.get('investment_flows', 0) * 2.0
+        
+        # NonConvex erhöht Komplexität stark
+        score += system_stats.get('nonconvex_flows', 0) * 3.0
+        
+        # Verschiedene Node-Typen erhöhen Komplexität
+        node_types = system_stats.get('node_types', {})
+        score += len(node_types) * 1.5
+        
+        return round(score, 1)
+    
+    def _calculate_data_quality_score(self, validation: Dict[str, Any]) -> float:
+        """Berechnet einen Datenqualitäts-Score."""
+        if validation.get('total_flows_checked', 0) == 0:
+            return 0.0
+        
+        # Basis-Score: Anteil der Flows mit Kostendaten
+        cost_coverage = validation.get('flows_with_costs', 0) / validation.get('total_flows_checked', 1)
+        score = cost_coverage * 100
+        
+        # Abzug für Warnungen
+        warnings_count = len(validation.get('warnings', []))
+        score -= warnings_count * 10
+        
+        # Abzug für fehlende Kostendaten
+        missing_data_count = len(validation.get('missing_cost_data', []))
+        score -= missing_data_count * 5
+        
+        # Bonus für vollständige Berechnung
+        if validation.get('cost_calculation_complete', False):
+            score += 10
+        
+        return max(0.0, min(100.0, round(score, 1)))
     
     def _save_dataframe(self, df: pd.DataFrame, filename: str):
         """Speichert DataFrame in gewähltem Format."""
@@ -1186,62 +1539,124 @@ class EnhancedResultsProcessor:
         self.logger.debug(f"      💾 {filepath.name}")
     
     def _save_summary(self, summary: Dict[str, Any]):
-        """Speichert die Zusammenfassung."""
+        """Speichert die erweiterte Zusammenfassung."""
         # JSON-Format für maschinenlesbare Zusammenfassung
         import json
         
-        json_file = self.output_dir / "enhanced_summary.json"
+        json_file = self.output_dir / "comprehensive_summary.json"
         with open(json_file, 'w', encoding='utf-8') as f:
             json.dump(summary, f, indent=2, default=str)
         
         self.output_files.append(json_file)
         
         # Erweiterte Textformat-Zusammenfassung
-        txt_file = self.output_dir / "enhanced_summary.txt"
+        txt_file = self.output_dir / "comprehensive_summary.txt"
         with open(txt_file, 'w', encoding='utf-8') as f:
-            f.write("ERWEITERTE OPTIMIERUNGSERGEBNISSE - ZUSAMMENFASSUNG\n")
-            f.write("=" * 60 + "\n\n")
+            f.write("UMFASSENDE OPTIMIERUNGSERGEBNISSE - ZUSAMMENFASSUNG\n")
+            f.write("=" * 70 + "\n\n")
             
-            for section, data in summary.items():
-                f.write(f"{section.upper().replace('_', ' ')}:\n")
-                f.write("-" * 40 + "\n")
-                
-                if isinstance(data, dict):
-                    for key, value in data.items():
-                        if isinstance(value, dict):
-                            f.write(f"  {key.replace('_', ' ').title()}:\n")
-                            for sub_key, sub_value in value.items():
-                                f.write(f"    {sub_key.replace('_', ' ').title()}: {sub_value}\n")
-                        elif isinstance(value, list):
-                            f.write(f"  {key.replace('_', ' ').title()}:\n")
-                            for i, item in enumerate(value, 1):
-                                if isinstance(item, dict):
-                                    f.write(f"    {i}. {item.get('technology', item.get('name', 'N/A'))}: ")
-                                    f.write(f"{item.get('costs_EUR', 0):,.2f} € ")
-                                    f.write(f"({item.get('share_percent', 0):.1f}%)\n")
-                                else:
-                                    f.write(f"    {i}. {item}\n")
-                        else:
-                            f.write(f"  {key.replace('_', ' ').title()}: {value}\n")
-                else:
-                    f.write(f"  {data}\n")
-                
+            # Simulation-Info
+            sim_info = summary.get('simulation_info', {})
+            if sim_info:
+                f.write("SIMULATION:\n")
+                f.write("-" * 12 + "\n")
+                f.write(f"Zeitraum: {sim_info.get('start_date', 'N/A')} bis {sim_info.get('end_date', 'N/A')}\n")
+                f.write(f"Dauer: {sim_info.get('duration_hours', 0):,} Stunden\n")
+                f.write(f"Auflösung: {sim_info.get('resolution', 'N/A')}\n")
+                f.write(f"Zeitschritte: {sim_info.get('total_periods', 0):,}\n\n")
+            
+            # System-Übersicht
+            sys_overview = summary.get('system_overview', {})
+            f.write("SYSTEM-ÜBERSICHT:\n")
+            f.write("-" * 17 + "\n")
+            f.write(f"Gesamtanzahl Komponenten: {sys_overview.get('total_nodes', 0)}\n")
+            f.write(f"Gesamtanzahl Flows: {sys_overview.get('total_flows', 0)}\n")
+            f.write(f"Investment-Flows: {sys_overview.get('investment_flows', 0)}\n")
+            f.write(f"Kostenrelevante Flows: {sys_overview.get('cost_relevant_flows', 0)}\n")
+            
+            node_types = sys_overview.get('node_types', {})
+            if node_types:
+                f.write("Komponententypen:\n")
+                for node_type, count in node_types.items():
+                    f.write(f"  {node_type}: {count}\n")
+            f.write("\n")
+            
+            # Kosten-Zusammenfassung
+            cost_summary = summary.get('cost_summary', {})
+            f.write("KOSTEN-ZUSAMMENFASSUNG:\n")
+            f.write("-" * 21 + "\n")
+            f.write(f"Gesamtkosten: {cost_summary.get('total_system_costs_EUR', 0):,.2f} €\n")
+            f.write(f"Investment-Kosten: {cost_summary.get('investment_costs_EUR', 0):,.2f} € ")
+            
+            cost_shares = cost_summary.get('cost_shares_percent', {})
+            if 'investment' in cost_shares:
+                f.write(f"({cost_shares['investment']:.1f}%)\n")
+            else:
                 f.write("\n")
+            
+            f.write(f"Variable Kosten: {cost_summary.get('variable_costs_EUR', 0):,.2f} € ")
+            if 'variable' in cost_shares:
+                f.write(f"({cost_shares['variable']:.1f}%)\n")
+            else:
+                f.write("\n")
+            
+            f.write(f"Fixe Kosten: {cost_summary.get('fixed_costs_EUR', 0):,.2f} € ")
+            if 'fixed' in cost_shares:
+                f.write(f"({cost_shares['fixed']:.1f}%)\n")
+            else:
+                f.write("\n")
+            
+            f.write(f"Dominante Kostenart: {cost_summary.get('dominant_cost_type', 'unbekannt')}\n\n")
+            
+            # Investment-Zusammenfassung
+            inv_summary = summary.get('investment_summary', {})
+            f.write("INVESTMENT-ZUSAMMENFASSUNG:\n")
+            f.write("-" * 26 + "\n")
+            f.write(f"Anzahl Investitionen: {inv_summary.get('number_of_investments', 0)}\n")
+            f.write(f"Gesamte investierte Kapazität: {inv_summary.get('total_invested_capacity_kW', 0):,.1f} kW\n")
+            f.write(f"Jährliche Investment-Kosten: {inv_summary.get('total_annual_investment_costs_EUR', 0):,.2f} €\n")
+            f.write(f"Durchschnittliche EP-Costs: {inv_summary.get('average_ep_costs_EUR_per_kW', 0):.2f} €/kW/a\n")
+            
+            inv_components = inv_summary.get('investment_components', [])
+            if inv_components:
+                f.write("Investment-Komponenten:\n")
+                for comp in inv_components:
+                    f.write(f"  • {comp}\n")
+            f.write("\n")
+            
+            # Energie-Flüsse
+            energy_flows = summary.get('energy_flows', {})
+            f.write("ENERGIE-FLÜSSE:\n")
+            f.write("-" * 15 + "\n")
+            f.write(f"Gesamtenergie: {energy_flows.get('total_energy_MWh', 0):,.1f} MWh\n")
+            f.write(f"Spitzenleistung: {energy_flows.get('peak_power_MW', 0):,.1f} MW\n")
+            f.write(f"Durchschnittsleistung: {energy_flows.get('average_power_MW', 0):,.1f} MW\n")
+            f.write(f"Anzahl Flow-Verbindungen: {energy_flows.get('number_of_flows', 0)}\n\n")
+            
+            # Performance-Metriken
+            performance = summary.get('performance_metrics', {})
+            f.write("PERFORMANCE-METRIKEN:\n")
+            f.write("-" * 20 + "\n")
+            f.write(f"Kostenberechnung vollständig: {'Ja' if performance.get('cost_calculation_complete', False) else 'Nein'}\n")
+            f.write(f"Flows mit Kostendaten: {performance.get('flows_with_costs_percent', 0):.1f}%\n")
+            f.write(f"System-Komplexität: {performance.get('system_complexity_score', 0):.1f}\n")
+            f.write(f"Datenqualität: {performance.get('data_quality_score', 0):.1f}/100\n")
         
         self.output_files.append(txt_file)
         self.logger.debug(f"      💾 {json_file.name}, {txt_file.name}")
 
 
-# Test-Funktion für den erweiterten Results Processor
-def test_enhanced_results_processor():
-    """Testfunktion für den Enhanced Results-Processor."""
+def test_enhanced_cost_analysis():
+    """Testfunktion für die erweiterte Kostenanalyse."""
     import tempfile
     
     # Dummy-Ergebnisse erstellen
+    timestamps = pd.date_range('2025-01-01', periods=24, freq='h')
+    
     dummy_results = {
         ('pv_plant', 'el_bus'): {
             'sequences': {
-                'flow': pd.Series([30, 35, 40], index=pd.date_range('2025-01-01', periods=3, freq='h'))
+                'flow': pd.Series(np.random.rand(24) * 30, index=timestamps)
             },
             'scalars': {
                 'invest': 100,
@@ -1250,7 +1665,7 @@ def test_enhanced_results_processor():
         },
         ('grid_import', 'el_bus'): {
             'sequences': {
-                'flow': pd.Series([10, 15, 20], index=pd.date_range('2025-01-01', periods=3, freq='h'))
+                'flow': pd.Series(np.random.rand(24) * 20, index=timestamps)
             },
             'scalars': {
                 'variable_costs': 0.25
@@ -1258,47 +1673,87 @@ def test_enhanced_results_processor():
         }
     }
     
+    # Dummy Energy System
+    class DummyFlow:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+    
+    class DummyInvestment:
+        def __init__(self, ep_costs, minimum=0, maximum=1000, existing=0):
+            self.ep_costs = ep_costs
+            self.minimum = minimum
+            self.maximum = maximum
+            self.existing = existing
+    
+    class DummyNode:
+        def __init__(self, label, node_type='Bus'):
+            self.label = label
+            self.node_type = node_type
+            self.inputs = {}
+            self.outputs = {}
+    
+    class DummyEnergySystem:
+        def __init__(self):
+            self.timeindex = timestamps
+            
+            # Nodes erstellen
+            self.el_bus = DummyNode('el_bus', 'Bus')
+            self.pv_plant = DummyNode('pv_plant', 'Source')
+            self.grid_import = DummyNode('grid_import', 'Source')
+            
+            # Flows mit Investment und Kosten
+            pv_flow = DummyFlow(
+                nominal_capacity=DummyInvestment(ep_costs=71.05, maximum=500),
+                variable_costs=0.0
+            )
+            
+            grid_flow = DummyFlow(
+                nominal_capacity=1000,
+                variable_costs=0.25
+            )
+            
+            # Verbindungen
+            self.pv_plant.outputs[self.el_bus] = pv_flow
+            self.grid_import.outputs[self.el_bus] = grid_flow
+            
+            self.el_bus.inputs[self.pv_plant] = pv_flow
+            self.el_bus.inputs[self.grid_import] = grid_flow
+            
+            self.nodes = [self.el_bus, self.pv_plant, self.grid_import]
+    
     with tempfile.TemporaryDirectory() as temp_dir:
-        settings = {'output_format': 'xlsx', 'debug_mode': True}
+        settings = {'debug_mode': True}
         processor = EnhancedResultsProcessor(Path(temp_dir), settings)
         
         # Dummy Energy System
-        class DummyNode:
-            def __init__(self, label, node_type):
-                self.label = label
-                self._type = node_type
-        
-        class DummyEnergySystem:
-            def __init__(self):
-                self.timeindex = pd.date_range('2025-01-01', periods=3, freq='h')
-                self.nodes = [
-                    DummyNode('pv_plant', 'Source'),
-                    DummyNode('el_bus', 'Bus'),
-                    DummyNode('grid_import', 'Source')
-                ]
-        
         energy_system = DummyEnergySystem()
-        excel_data = {
-            'sources': pd.DataFrame({
-                'label': ['pv_plant', 'grid_import'],
-                'investment_costs': [800, ''],
-                'lifetime': [25, ''],
-                'interest_rate': [0.05, '']
-            })
-        }
+        excel_data = {}
         
         try:
-            results = processor.process_results(dummy_results, energy_system, excel_data)
-            print("✅ Enhanced Results-Processor Test erfolgreich!")
+            results = processor.process_results_with_system_export(
+                dummy_results, energy_system, excel_data
+            )
+            
+            print("✅ Enhanced Cost Analysis Test erfolgreich!")
             print(f"Erstellte Dateien: {len(processor.output_files)}")
             
-            if 'objective_breakdown' in results:
-                breakdown = results['objective_breakdown']
-                print(f"Zielfunktions-Breakdown-Kategorien: {list(breakdown.keys())}")
-                
-                if 'cost_type_summary' in breakdown:
-                    print("Kostenarten-Zusammenfassung:")
-                    print(breakdown['cost_type_summary'].to_string(index=False))
+            # System-Export prüfen
+            if 'system_export' in results:
+                system_export = results['system_export']
+                print(f"System-Export: {len(system_export)} Kategorien")
+                print(f"  Nodes: {len(system_export.get('nodes', {}))}")
+                print(f"  Flows: {len(system_export.get('flows', []))}")
+                print(f"  Investments: {len(system_export.get('investments', []))}")
+            
+            # Kosten-Aufschlüsselung prüfen
+            if 'cost_breakdown' in results:
+                cost_breakdown = results['cost_breakdown']
+                print(f"Kosten-Aufschlüsselung:")
+                summary = cost_breakdown.get('summary', {})
+                print(f"  Gesamtkosten: {summary.get('total_system_costs_EUR', 0):.2f} €")
+                print(f"  Investment-Kosten: {summary.get('investment_costs_EUR', 0):.2f} €")
+                print(f"  Variable Kosten: {summary.get('variable_costs_EUR', 0):.2f} €")
             
         except Exception as e:
             print(f"❌ Test fehlgeschlagen: {e}")
@@ -1307,301 +1762,4 @@ def test_enhanced_results_processor():
 
 
 if __name__ == "__main__":
-    test_enhanced_results_processor() 0,
-                            'flows_count': 0,
-                            'total_capacity_kW': 0,
-                            'total_energy_kWh': 0,
-                        }
-                
-                # Aggregiere Kosten für diese Komponente
-                if 'scalars' in flow_results:
-                    scalars = flow_results['scalars']
-                    
-                    # Investment-Kosten
-                    if 'invest' in scalars and scalars['invest'] > 0:
-                        investment_params = self._get_comprehensive_investment_params(
-                            source, target, energy_system, excel_data
-                        )
-                        if investment_params:
-                            annual_inv_costs = investment_params['ep_costs'] * scalars['invest']
-                            component_costs[str(component_label)]['investment_costs_EUR'] += annual_inv_costs
-                            component_costs[str(component_label)]['total_capacity_kW'] += scalars['invest']
-                    
-                    # Variable Kosten
-                    if 'sequences' in flow_results and 'flow' in flow_results['sequences']:
-                        flow_values = flow_results['sequences']['flow']
-                        total_energy = flow_values.sum()
-                        
-                        var_costs_info = self._get_comprehensive_variable_costs(
-                            source, target, energy_system, excel_data
-                        )
-                        if var_costs_info and var_costs_info['var_costs'] != 0:
-                            var_costs_total = total_energy * var_costs_info['var_costs']
-                            component_costs[str(component_label)]['variable_costs_EUR'] += var_costs_total
-                        
-                        component_costs[str(component_label)]['total_energy_kWh'] += total_energy
-                        component_costs[str(component_label)]['flows_count'] += 1
-        
-        # Berechne Gesamtkosten und zusätzliche Metriken
-        component_data = []
-        for comp_label, comp_data in component_costs.items():
-            comp_data['total_costs_EUR'] = (
-                comp_data['investment_costs_EUR'] + 
-                comp_data['variable_costs_EUR'] + 
-                comp_data['fixed_costs_EUR']
-            )
-            
-            # Spezifische Kosten
-            if comp_data['total_capacity_kW'] > 0:
-                comp_data['specific_costs_EUR_per_kW'] = comp_data['total_costs_EUR'] / comp_data['total_capacity_kW']
-            else:
-                comp_data['specific_costs_EUR_per_kW'] = 0
-            
-            if comp_data['total_energy_kWh'] > 0:
-                comp_data['specific_costs_EUR_per_kWh'] = comp_data['total_costs_EUR'] / comp_data['total_energy_kWh']
-            else:
-                comp_data['specific_costs_EUR_per_kWh'] = 0
-            
-            component_data.append(comp_data)
-        
-        df = pd.DataFrame(component_data)
-        
-        if not df.empty:
-            df = df.sort_values('total_costs_EUR', ascending=False)
-            
-            # Relative Anteile
-            total_costs = df['total_costs_EUR'].sum()
-            if total_costs > 0:
-                df['cost_share_percent'] = (df['total_costs_EUR'] / total_costs * 100).round(2)
-        
-        return df
-    
-    def _calculate_technology_category_costs(self, breakdown: Dict[str, pd.DataFrame]) -> pd.DataFrame:
-        """✅ NEU: Berechnet Kosten nach Technologie-Kategorien."""
-        category_costs = {}
-        
-        # Sammle Kosten aus allen Breakdown-Kategorien
-        for breakdown_type, df in breakdown.items():
-            if df.empty or 'technology_category' not in df.columns:
-                continue
-            
-            for _, row in df.iterrows():
-                category = row['technology_category']
-                
-                if category not in category_costs:
-                    category_costs[category] = {
-                        'technology_category': category,
-                        'investment_costs_EUR': 0,
-                        'variable_costs_EUR': 0,
-                        'fixed_costs_EUR': 0,
-                        'total_costs_EUR': 0,
-                        'components_count': 0,
-                        'total_capacity_kW': 0,
-                        'total_energy_kWh': 0,
-                    }
-                
-                # Kosten nach Typ addieren
-                if breakdown_type == 'investment_costs':
-                    category_costs[category]['investment_costs_EUR'] += row.get('annual_investment_costs_EUR', 0)
-                    category_costs[category]['total_capacity_kW'] += row.get('invested_capacity_kW', 0)
-                elif breakdown_type == 'variable_costs':
-                    category_costs[category]['variable_costs_EUR'] += row.get('total_variable_costs_EUR', 0)
-                    category_costs[category]['total_energy_kWh'] += row.get('total_energy_kWh', 0)
-                elif breakdown_type == 'fixed_operational_costs':
-                    category_costs[category]['fixed_costs_EUR'] += row.get('total_fixed_costs_EUR', 0)
-                
-                category_costs[category]['components_count'] += 1
-        
-        # Gesamtkosten berechnen
-        category_data = []
-        for category, data in category_costs.items():
-            data['total_costs_EUR'] = (
-                data['investment_costs_EUR'] + 
-                data['variable_costs_EUR'] + 
-                data['fixed_costs_EUR']
-            )
-            
-            # Spezifische Metriken
-            if data['total_capacity_kW'] > 0:
-                data['avg_specific_investment_EUR_per_kW'] = data['investment_costs_EUR'] / data['total_capacity_kW']
-            else:
-                data['avg_specific_investment_EUR_per_kW'] = 0
-            
-            if data['total_energy_kWh'] > 0:
-                data['avg_variable_costs_EUR_per_kWh'] = data['variable_costs_EUR'] / data['total_energy_kWh']
-            else:
-                data['avg_variable_costs_EUR_per_kWh'] = 0
-            
-            category_data.append(data)
-        
-        df = pd.DataFrame(category_data)
-        
-        if not df.empty:
-            df = df.sort_values('total_costs_EUR', ascending=False)
-            
-            # Relative Anteile
-            total_costs = df['total_costs_EUR'].sum()
-            if total_costs > 0:
-                df['category_share_percent'] = (df['total_costs_EUR'] / total_costs * 100).round(2)
-        
-        return df
-    
-    def _calculate_flow_level_costs(self, results: Dict[str, Any], 
-                                  energy_system: Any, 
-                                  excel_data: Dict[str, Any]) -> pd.DataFrame:
-        """✅ NEU: Detaillierte Kosten auf Flow-Level."""
-        flow_data = []
-        
-        for (source, target), flow_results in results.items():
-            flow_entry = {
-                'source': str(source),
-                'target': str(target),
-                'connection': f"{source} → {target}",
-                'flow_type': self._determine_flow_type(source, target, energy_system),
-                
-                # Kosten-Komponenten
-                'investment_costs_EUR': 0,
-                'variable_costs_EUR': 0,
-                'fixed_costs_EUR': 0,
-                'total_costs_EUR': 0,
-                
-                # Flow-Eigenschaften
-                'has_investment': False,
-                'has_variable_costs': False,
-                'has_fixed_costs': False,
-                'nominal_capacity_kW': 0,
-                'total_energy_kWh': 0,
-            }
-            
-            # Investment-Kosten
-            if 'scalars' in flow_results and 'invest' in flow_results['scalars']:
-                if flow_results['scalars']['invest'] > 0:
-                    investment_params = self._get_comprehensive_investment_params(
-                        source, target, energy_system, excel_data
-                    )
-                    if investment_params:
-                        flow_entry['investment_costs_EUR'] = (
-                            investment_params['ep_costs'] * flow_results['scalars']['invest']
-                        )
-                        flow_entry['has_investment'] = True
-                        flow_entry['nominal_capacity_kW'] = flow_results['scalars']['invest']
-            
-            # Variable Kosten
-            if 'sequences' in flow_results and 'flow' in flow_results['sequences']:
-                flow_values = flow_results['sequences']['flow']
-                total_energy = flow_values.sum()
-                flow_entry['total_energy_kWh'] = total_energy
-                
-                var_costs_info = self._get_comprehensive_variable_costs(
-                    source, target, energy_system, excel_data
-                )
-                if var_costs_info and var_costs_info['var_costs'] != 0:
-                    flow_entry['variable_costs_EUR'] = total_energy * var_costs_info['var_costs']
-                    flow_entry['has_variable_costs'] = True
-            
-            # Gesamtkosten
-            flow_entry['total_costs_EUR'] = (
-                flow_entry['investment_costs_EUR'] + 
-                flow_entry['variable_costs_EUR'] + 
-                flow_entry['fixed_costs_EUR']
-            )
-            
-            # Spezifische Kosten
-            if flow_entry['total_energy_kWh'] > 0:
-                flow_entry['specific_costs_EUR_per_kWh'] = (
-                    flow_entry['total_costs_EUR'] / flow_entry['total_energy_kWh']
-                )
-            else:
-                flow_entry['specific_costs_EUR_per_kWh'] = 0
-            
-            flow_data.append(flow_entry)
-        
-        df = pd.DataFrame(flow_data)
-        
-        if not df.empty:
-            df = df.sort_values('total_costs_EUR', ascending=False)
-            
-            # Nur Flows mit Kosten > 0 anzeigen
-            df = df[df['total_costs_EUR'] > 0].copy()
-            
-            if not df.empty:
-                total_costs = df['total_costs_EUR'].sum()
-                df['flow_share_percent'] = (df['total_costs_EUR'] / total_costs * 100).round(2)
-        
-        return df
-    
-    def _calculate_investment_analysis(self, breakdown: Dict[str, pd.DataFrame], 
-                                     excel_data: Dict[str, Any]) -> pd.DataFrame:
-        """✅ NEU: Investment-Analyse mit Vergleich zu Excel-Parametern."""
-        if 'investment_costs' not in breakdown or breakdown['investment_costs'].empty:
-            return pd.DataFrame()
-        
-        inv_df = breakdown['investment_costs']
-        analysis_data = []
-        
-        for _, row in inv_df.iterrows():
-            analysis_entry = {
-                'component_label': row['component_label'],
-                'technology_type': row['technology_type'],
-                
-                # Investment-Ergebnisse
-                'invested_capacity_kW': row['invested_capacity_kW'],
-                'annual_investment_costs_EUR': row['annual_investment_costs_EUR'],
-                
-                # Investment-Parameter
-                'original_investment_costs_EUR_per_kW': row.get('original_investment_costs_EUR_per_kW', 0),
-                'ep_costs_EUR_per_kW_per_year': row['ep_costs_EUR_per_kW_per_year'],
-                'lifetime_years': row.get('lifetime_years', 0),
-                'interest_rate_percent': row.get('interest_rate_percent', 0),
-                
-                # Investment-Effizienz
-                'investment_utilization_percent': 0,
-                'investment_efficiency_score': 0,
-                'payback_period_years': 0,
-            }
-            
-            # Berechne Investment-Effizienz-Metriken
-            invest_max = row.get('invest_max_kW', np.inf)
-            if invest_max != np.inf and invest_max > 0:
-                analysis_entry['investment_utilization_percent'] = (
-                    row['invested_capacity_kW'] / invest_max * 100
-                )
-            
-            # Payback-Periode (vereinfacht)
-            if row.get('original_investment_costs_EUR_per_kW', 0) > 0:
-                analysis_entry['payback_period_years'] = (
-                    row['original_investment_costs_EUR_per_kW'] / 
-                    row['ep_costs_EUR_per_kW_per_year']
-                )
-            
-            analysis_data.append(analysis_entry)
-        
-        df = pd.DataFrame(analysis_data)
-        
-        if not df.empty:
-            df = df.sort_values('annual_investment_costs_EUR', ascending=False)
-        
-        return df
-    
-    def _calculate_cost_per_energy_unit(self, breakdown: Dict[str, pd.DataFrame], 
-                                      results: Dict[str, Any]) -> pd.DataFrame:
-        """✅ NEU: Kosten pro Energieeinheit nach Technologien."""
-        cost_per_unit_data = []
-        
-        # Aggregiere Daten aus variable_costs breakdown
-        if 'variable_costs' in breakdown and not breakdown['variable_costs'].empty:
-            var_df = breakdown['variable_costs']
-            
-            # Gruppiere nach Technologie-Typ
-            tech_groups = var_df.groupby('technology_type').agg({
-                'total_energy_kWh': 'sum',
-                'total_variable_costs_EUR': 'sum'
-            }).reset_index()
-            
-            for _, row in tech_groups.iterrows():
-                if row['total_energy_kWh'] > 0:
-                    cost_per_unit_data.append({
-                        'technology_type': row['technology_type'],
-                        'cost_category': 'Variable',
-                        'total_energy_kWh': row['total_energy_kWh'],
-                        'total_costs_EUR':
+    test_enhanced_cost_analysis()
