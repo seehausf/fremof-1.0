@@ -15,7 +15,7 @@ import pandas as pd
 import numpy as np
 import json
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Union
 import logging
 
 try:
@@ -386,10 +386,10 @@ class EnergySystemAnalyzer:
                         }
                         nonconvex_list.append(nonconvex_def)
         
-        return nonconvex_list
-    
+        return nonconvex_list 
+  
     def _export_cost_parameters(self, energy_system: Any) -> Dict[str, List[Dict[str, Any]]]:
-        """Exportiert alle kostenrelevanten Parameter."""
+        """KORRIGIERT: Exportiert alle kostenrelevanten Parameter mit robuster Array-Behandlung."""
         cost_params = {
             'variable_costs': [],
             'investment_costs': [],
@@ -413,46 +413,361 @@ class EnergySystemAnalyzer:
                     flows_to_check.append((f"{node_label} → {output_node.label}", flow))
             
             for connection, flow in flows_to_check:
-                # Variable Kosten
+                # Variable Kosten - ROBUSTE BEHANDLUNG
                 if hasattr(flow, 'variable_costs') and flow.variable_costs is not None:
-                    cost_params['variable_costs'].append({
-                        'component': node_label,
-                        'connection': connection,
-                        'variable_costs': float(flow.variable_costs)
-                    })
+                    try:
+                        var_costs_value = self._safe_extract_numeric_value(
+                            flow.variable_costs, f"variable_costs für {connection}"
+                        )
+                        
+                        if var_costs_value is not None and var_costs_value != 0:
+                            cost_params['variable_costs'].append({
+                                'component': node_label,
+                                'connection': connection,
+                                'variable_costs': var_costs_value
+                            })
+                    
+                    except Exception as e:
+                        self.logger.warning(f"Fehler bei variable_costs für {connection}: {e}")
+                        continue
                 
-                # Investment-Kosten (EP-Costs)
+                # Investment-Kosten (EP-Costs) - ERWEITERTE ROBUSTHEIT
                 if hasattr(flow, 'nominal_capacity') and isinstance(flow.nominal_capacity, Investment):
                     investment = flow.nominal_capacity
                     if hasattr(investment, 'ep_costs') and investment.ep_costs is not None:
-                        cost_params['investment_costs'].append({
-                            'component': node_label,
-                            'connection': connection,
-                            'ep_costs': float(investment.ep_costs),
-                            'existing': float(getattr(investment, 'existing', 0)),
-                            'minimum': float(getattr(investment, 'minimum', 0)),
-                            'maximum': float(getattr(investment, 'maximum', np.inf))
-                        })
+                        try:
+                            ep_costs_value = self._safe_extract_numeric_value(
+                                investment.ep_costs, f"ep_costs für {connection}"
+                            )
+                            
+                            if ep_costs_value is not None:
+                                existing_val = self._safe_extract_numeric_value(
+                                    getattr(investment, 'existing', 0), f"existing für {connection}"
+                                ) or 0
+                                
+                                minimum_val = self._safe_extract_numeric_value(
+                                    getattr(investment, 'minimum', 0), f"minimum für {connection}"
+                                ) or 0
+                                
+                                maximum_val = getattr(investment, 'maximum', np.inf)
+                                if maximum_val == np.inf:
+                                    maximum_val = 999999
+                                else:
+                                    maximum_val = self._safe_extract_numeric_value(
+                                        maximum_val, f"maximum für {connection}"
+                                    ) or 999999
+                                
+                                cost_params['investment_costs'].append({
+                                    'component': node_label,
+                                    'connection': connection,
+                                    'ep_costs': ep_costs_value,
+                                    'existing': existing_val,
+                                    'minimum': minimum_val,
+                                    'maximum': maximum_val
+                                })
+                        
+                        except Exception as e:
+                            self.logger.warning(f"Fehler bei investment_costs für {connection}: {e}")
+                            continue
                 
-                # NonConvex-Kosten
+                # NonConvex-Kosten - ROBUSTE BEHANDLUNG
                 if hasattr(flow, 'nonconvex') and flow.nonconvex is not None:
                     nonconvex = flow.nonconvex
                     
+                    # Startup-Kosten
                     if hasattr(nonconvex, 'startup_costs') and nonconvex.startup_costs is not None:
-                        cost_params['startup_costs'].append({
-                            'component': node_label,
-                            'connection': connection,
-                            'startup_costs': float(nonconvex.startup_costs)
-                        })
+                        try:
+                            startup_value = self._safe_extract_numeric_value(
+                                nonconvex.startup_costs, f"startup_costs für {connection}"
+                            )
+                            
+                            if startup_value is not None:
+                                cost_params['startup_costs'].append({
+                                    'component': node_label,
+                                    'connection': connection,
+                                    'startup_costs': startup_value
+                                })
+                        
+                        except Exception as e:
+                            self.logger.warning(f"Fehler bei startup_costs für {connection}: {e}")
                     
+                    # Shutdown-Kosten
                     if hasattr(nonconvex, 'shutdown_costs') and nonconvex.shutdown_costs is not None:
-                        cost_params['shutdown_costs'].append({
-                            'component': node_label,
-                            'connection': connection,
-                            'shutdown_costs': float(nonconvex.shutdown_costs)
-                        })
+                        try:
+                            shutdown_value = self._safe_extract_numeric_value(
+                                nonconvex.shutdown_costs, f"shutdown_costs für {connection}"
+                            )
+                            
+                            if shutdown_value is not None:
+                                cost_params['shutdown_costs'].append({
+                                    'component': node_label,
+                                    'connection': connection,
+                                    'shutdown_costs': shutdown_value
+                                })
+                        
+                        except Exception as e:
+                            self.logger.warning(f"Fehler bei shutdown_costs für {connection}: {e}")
         
         return cost_params
+    
+    def _safe_extract_numeric_value(self, value: Any, context: str = "") -> Optional[float]:
+        """
+        NEUE HILFSMETHODE: Extrahiert sicher numerische Werte aus verschiedenen Datentypen.
+        
+        Args:
+            value: Der zu konvertierende Wert (kann Einzelwert, Array, _FakeSequence, etc. sein)
+            context: Kontext für Logging-Zwecke
+            
+        Returns:
+            float oder None bei Fehlern
+        """
+        try:
+            # Fall 1: Bereits numerischer Wert
+            if isinstance(value, (int, float)):
+                return float(value)
+            
+            # Fall 2: String-Konvertierung
+            if isinstance(value, str):
+                try:
+                    return float(value)
+                except ValueError:
+                    self.logger.warning(f"String '{value}' für {context} nicht konvertierbar")
+                    return None
+            
+            # Fall 3: Array/Sequence (z.B. _FakeSequence, list, numpy array)
+            if hasattr(value, '__iter__') and not isinstance(value, str):
+                try:
+                    # Konvertiere zu numpy array für sichere Operationen
+                    array_value = np.asarray(value)
+                    
+                    # Prüfe ob Array numerisch ist
+                    if np.issubdtype(array_value.dtype, np.number):
+                        if len(array_value) == 0:
+                            return 0.0
+                        elif len(array_value) == 1:
+                            return float(array_value[0])
+                        else:
+                            # Für Arrays: Verwende den Mittelwert
+                            mean_value = float(np.mean(array_value))
+                            self.logger.debug(f"Array-Wert für {context} als Mittelwert extrahiert: {mean_value:.4f}")
+                            return mean_value
+                    else:
+                        self.logger.warning(f"Nicht-numerisches Array für {context}")
+                        return None
+                
+                except Exception as array_error:
+                    # Fallback: Versuche erstes Element
+                    try:
+                        first_value = value[0] if hasattr(value, '__getitem__') else next(iter(value))
+                        result = float(first_value)
+                        self.logger.debug(f"Array-Fallback für {context}: {result:.4f}")
+                        return result
+                    except:
+                        self.logger.warning(f"Array-Extraktion für {context} fehlgeschlagen: {array_error}")
+                        return None
+            
+            # Fall 4: Versuche direkte Konvertierung
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                self.logger.warning(f"Unbekannter Wert-Typ für {context}: {type(value)} = {value}")
+                return None
+        
+        except Exception as e:
+            self.logger.warning(f"Fehler bei Wert-Extraktion für {context}: {e}")
+            return None
+    
+    def _export_flow_properties(self, flow: Any) -> Dict[str, Any]:
+        """KORRIGIERT: Exportiert alle Eigenschaften eines Flows mit robuster Array-Behandlung."""
+        properties = {}
+        
+        # Standard Flow-Attribute
+        flow_attrs = [
+            'nominal_capacity', 'variable_costs', 'min', 'max', 
+            'fix', 'summed_max', 'summed_min', 'positive_gradient_limit',
+            'negative_gradient_limit', 'full_load_time_max', 'full_load_time_min'
+        ]
+        
+        for attr in flow_attrs:
+            if hasattr(flow, attr):
+                value = getattr(flow, attr)
+                
+                if value is not None:
+                    try:
+                        if isinstance(value, Investment):
+                            properties[attr] = self._export_investment_properties(value)
+                        elif isinstance(value, NonConvex):
+                            properties[attr] = self._export_nonconvex_properties(value)
+                        elif isinstance(value, (list, np.ndarray)) or (hasattr(value, '__iter__') and not isinstance(value, str)):
+                            # ROBUSTE ARRAY-BEHANDLUNG
+                            properties[attr] = self._export_array_property(value, attr)
+                        else:
+                            # Einzelwert-Behandlung
+                            numeric_value = self._safe_extract_numeric_value(value, f"{attr}")
+                            if numeric_value is not None:
+                                properties[attr] = numeric_value
+                            else:
+                                properties[attr] = str(value)
+                    
+                    except Exception as e:
+                        # Fallback für alle anderen Fehler
+                        properties[attr] = {
+                            'type': 'export_error',
+                            'error': str(e),
+                            'value_type': str(type(value))
+                        }
+        
+        return properties
+    
+    def _export_array_property(self, value: Any, attr_name: str) -> Dict[str, Any]:
+        """
+        NEUE HILFSMETHODE: Exportiert Array-Properties sicher.
+        """
+        try:
+            # Konvertiere zu numpy array für sichere Operationen
+            array_value = np.asarray(value)
+            
+            # Prüfe ob Array numerisch ist
+            if np.issubdtype(array_value.dtype, np.number) and len(array_value) > 0:
+                return {
+                    'type': 'timeseries',
+                    'length': len(array_value),
+                    'min': float(np.min(array_value)),
+                    'max': float(np.max(array_value)),
+                    'mean': float(np.mean(array_value)),
+                    'sum': float(np.sum(array_value)),
+                    'first_10': [float(v) for v in array_value[:10]],
+                    'last_10': [float(v) for v in array_value[-10:]]
+                }
+            else:
+                # Nicht-numerisches Array oder leeres Array
+                return {
+                    'type': 'array_non_numeric',
+                    'length': len(array_value) if hasattr(array_value, '__len__') else 0,
+                    'first_5': [str(v) for v in array_value[:5]] if len(array_value) > 0 else []
+                }
+        except Exception as array_error:
+            # Fallback für problematische Arrays
+            return {
+                'type': 'array_unconvertible',
+                'error': str(array_error),
+                'repr': str(value)[:100]  # Erste 100 Zeichen
+            }
+    
+    def _export_investment_properties(self, investment: Any) -> Dict[str, Any]:
+        """KORRIGIERT: Exportiert Investment-Eigenschaften mit robuster Wert-Extraktion."""
+        properties = {'type': 'Investment'}
+        
+        investment_attrs = [
+            'ep_costs', 'minimum', 'maximum', 'existing', 'offset',
+            'nonconvex', 'overall_maximum', 'overall_minimum'
+        ]
+        
+        for attr in investment_attrs:
+            if hasattr(investment, attr):
+                value = getattr(investment, attr)
+                if value is not None:
+                    if isinstance(value, NonConvex):
+                        properties[attr] = self._export_nonconvex_properties(value)
+                    else:
+                        numeric_value = self._safe_extract_numeric_value(value, f"Investment.{attr}")
+                        if numeric_value is not None:
+                            properties[attr] = numeric_value
+                        else:
+                            properties[attr] = str(value)
+        
+        return properties
+    
+    def _export_nonconvex_properties(self, nonconvex: Any) -> Dict[str, Any]:
+        """KORRIGIERT: Exportiert NonConvex-Eigenschaften mit robuster Wert-Extraktion."""
+        properties = {'type': 'NonConvex'}
+        
+        nonconvex_attrs = [
+            'minimum_uptime', 'minimum_downtime', 'startup_costs', 'shutdown_costs',
+            'maximum_startups', 'maximum_shutdowns', 'initial_status',
+            'activity_costs', 'inactivity_costs'
+        ]
+        
+        for attr in nonconvex_attrs:
+            if hasattr(nonconvex, attr):
+                value = getattr(nonconvex, attr)
+                if value is not None:
+                    numeric_value = self._safe_extract_numeric_value(value, f"NonConvex.{attr}")    
+    # ZUSÄTZLICH: Improved Error Handling in _calculate_variable_costs_detailed
+    
+    def _calculate_variable_costs_detailed(self, results: Dict[str, Any], 
+                                         system_export: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Berechnet detaillierte variable Kosten mit robuster Fehlerbehandlung."""
+        variable_costs = []
+        
+        # Variable Kosten-Parameter aus System-Export
+        var_cost_params = system_export.get('cost_parameters', {}).get('variable_costs', [])
+        
+        for cost_param in var_cost_params:
+            component = cost_param['component']
+            connection = cost_param['connection']
+            var_costs_rate = cost_param['variable_costs']
+            
+            # Suche entsprechende Results
+            for (source, target), flow_results in results.items():
+                result_connection = f"{source} → {target}"
+                
+                if result_connection == connection and 'sequences' in flow_results:
+                    flow_values = flow_results['sequences'].get('flow')
+                    
+                    if flow_values is not None:
+                        try:
+                            # ROBUSTE FLOW-VALUES BEHANDLUNG
+                            if hasattr(flow_values, 'sum'):
+                                total_energy = flow_values.sum()
+                            else:
+                                # Fallback für andere Flow-Value-Typen
+                                import numpy as np
+                                total_energy = np.sum(flow_values)
+                            
+                            if total_energy > 0 and var_costs_rate != 0:
+                                total_variable_costs = total_energy * var_costs_rate
+                                
+                                # Zusätzliche Statistiken mit robuster Berechnung
+                                try:
+                                    if hasattr(flow_values, 'max'):
+                                        max_power = flow_values.max()
+                                        mean_power = flow_values.mean()
+                                        operating_hours = (flow_values > 0).sum()
+                                    else:
+                                        import numpy as np
+                                        max_power = np.max(flow_values)
+                                        mean_power = np.mean(flow_values)
+                                        operating_hours = np.sum(flow_values > 0)
+                                    
+                                    capacity_factor = mean_power / max_power if max_power > 0 else 0
+                                    
+                                except Exception as stats_error:
+                                    self.logger.warning(f"Statistik-Berechnung für {connection} fehlgeschlagen: {stats_error}")
+                                    max_power = float(total_energy)  # Fallback
+                                    mean_power = float(total_energy) / len(flow_values) if len(flow_values) > 0 else 0
+                                    operating_hours = len(flow_values)
+                                    capacity_factor = 0
+                                
+                                variable_cost = {
+                                    'component': component,
+                                    'connection': connection,
+                                    'total_energy_kWh': float(total_energy),
+                                    'variable_costs_EUR_per_kWh': float(var_costs_rate),
+                                    'total_variable_costs_EUR': float(total_variable_costs),
+                                    'max_power_kW': float(max_power),
+                                    'average_power_kW': float(mean_power),
+                                    'operating_hours': int(operating_hours),
+                                    'capacity_factor': float(capacity_factor)
+                                }
+                                
+                                variable_costs.append(variable_cost)
+                        
+                        except Exception as e:
+                            self.logger.warning(f"Variable Kosten-Berechnung für {connection} fehlgeschlagen: {e}")
+                            continue
+        
+        return variable_costs
     
     def _export_excel_reference(self, excel_data: Dict[str, Any]) -> Dict[str, Any]:
         """Exportiert Referenz zu originalen Excel-Daten."""
