@@ -117,7 +117,11 @@ class EnergySystemOptimizer:
     
     def initialize_modules(self):
 <<<<<<< HEAD
+<<<<<<< HEAD
         """Initialisiert alle Module mit Enhanced Results Processor."""
+=======
+        """Initialisiert alle Module mit korrigiertem Logging."""
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
 =======
         """Initialisiert alle Module mit korrigiertem Logging."""
 >>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
@@ -157,8 +161,11 @@ class EnergySystemOptimizer:
             }
             
 <<<<<<< HEAD
+<<<<<<< HEAD
             self.logger.info(f"✅ {len(self.modules)} Module initialisiert (mit Enhanced Results Processing)")
 =======
+=======
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
             # ✅ NUR EINMAL loggen
             self.logger.info(f"✅ {len(self.modules)} Module initialisiert")
 >>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
@@ -234,7 +241,11 @@ class EnergySystemOptimizer:
     
     def run_project(self, project: Dict[str, Any]):
 <<<<<<< HEAD
+<<<<<<< HEAD
         """Führt ein Projekt mit Enhanced Results Processing durch."""
+=======
+        """✅ KORRIGIERT: Führt ein Projekt ohne doppeltes Logging durch."""
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
 =======
         """✅ KORRIGIERT: Führt ein Projekt ohne doppeltes Logging durch."""
 >>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
@@ -255,7 +266,11 @@ class EnergySystemOptimizer:
         project_settings['base_output_dir'] = self.directories['output']
         
 <<<<<<< HEAD
+<<<<<<< HEAD
         # Excel-Reader mit aktualisierten Settings
+=======
+        # Excel-Reader mit den aktualisierten Settings versorgen
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
 =======
         # Excel-Reader mit den aktualisierten Settings versorgen
 >>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
@@ -269,8 +284,13 @@ class EnergySystemOptimizer:
         self.analyzer.output_dir = project_output_dir
         
 <<<<<<< HEAD
+<<<<<<< HEAD
         # File-Logger einrichten
         self.setup_project_logging(project_output_dir, project_name)
+=======
+        # ✅ KORRIGIERT: File-Logger OHNE neue Console-Handler
+        self.setup_project_file_logging(project_output_dir, project_name)
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
 =======
         # ✅ KORRIGIERT: File-Logger OHNE neue Console-Handler
         self.setup_project_file_logging(project_output_dir, project_name)
@@ -287,7 +307,11 @@ class EnergySystemOptimizer:
             self.logger.info(f"✅ Eingabedatei validiert: {project_file.name}")
             
 <<<<<<< HEAD
+<<<<<<< HEAD
             # 📊 Schritt 1: Excel-Daten einlesen (mit Timestep-Management)
+=======
+            # Schritt 1: Excel-Daten einlesen (MIT TIMESTEP-MANAGEMENT)
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
 =======
             # Schritt 1: Excel-Daten einlesen (MIT TIMESTEP-MANAGEMENT)
 >>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
@@ -305,10 +329,17 @@ class EnergySystemOptimizer:
                 self.logger.info(f"   📋 {key}: {value}")
             
 <<<<<<< HEAD
+<<<<<<< HEAD
             # Timestep-Management Ergebnisse loggen
             self.log_timestep_management_results(excel_data, project_output_dir)
             
             # 🏗️ Schritt 2: Energiesystem aufbauen
+=======
+            # TIMESTEP-MANAGEMENT ERGEBNISSE LOGGEN
+            self.log_timestep_management_results(excel_data, project_output_dir)
+            
+            # Schritt 2: Energiesystem aufbauen
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
 =======
             # TIMESTEP-MANAGEMENT ERGEBNISSE LOGGEN
             self.log_timestep_management_results(excel_data, project_output_dir)
@@ -343,9 +374,12 @@ class EnergySystemOptimizer:
                 self.logger.info(f"   ⚡ {key}: {value}")
             
 <<<<<<< HEAD
+<<<<<<< HEAD
             # 📈 Schritt 4: ENHANCED RESULTS PROCESSING
             self.logger.info("📈 Schritt 4: Enhanced Results Processing mit vollständiger Kostenanalyse")
 =======
+=======
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
             # Schritt 4: Ergebnisse verarbeiten
             self.logger.info("📈 Schritt 4: Ergebnisse verarbeiten")
 >>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
@@ -371,6 +405,9 @@ class EnergySystemOptimizer:
 =======
                 self.logger.info(f"   💾 {len(output_files)} Dateien erstellt:")
                 for output_file in output_files[:5]:
+<<<<<<< HEAD
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
+=======
 >>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
                     self.logger.info(f"      • {Path(output_file).name}")
                 if len(output_files) > 10:
@@ -754,6 +791,9 @@ class EnergySystemOptimizer:
                 
         except Exception as e:
             self.logger.warning(f"Projekt-File-Logging konnte nicht eingerichtet werden: {e}")
+<<<<<<< HEAD
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
+=======
 >>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
     
     def log_timestep_management_results(self, excel_data: Dict[str, Any], project_output_dir: Path):
