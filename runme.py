@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """
-oemof.solph 0.6.0 Hauptprogramm (AKTUALISIERT)
-=============================================
+oemof.solph 0.6.0 Hauptprogramm (LOGGING KORRIGIERT)
+==================================================
 
 Vollständiges Hauptprogramm mit integriertem Timestep-Management
-und automatischen Timestep-Visualisierungen.
+und bereinigter Logging-Konfiguration ohne Duplikate.
 
-Autor: [Ihr Name]
-Datum: Juli 2025
-Version: 1.0.1 (mit Timestep-Management)
+KORRIGIERT: Doppeltes Logging behoben durch bessere Handler-Verwaltung.
 """
 
 import sys
@@ -33,7 +31,7 @@ except ImportError as e:
 
 
 class EnergySystemOptimizer:
-    """Hauptklasse für die Energiesystem-Optimierung mit Timestep-Management."""
+    """Hauptklasse für die Energiesystem-Optimierung mit korrigiertem Logging."""
     
     def __init__(self):
         """Initialisiert das Hauptprogramm."""
@@ -41,7 +39,7 @@ class EnergySystemOptimizer:
         # Projektstruktur einrichten
         self.setup_project_structure()
         
-        # Logging einrichten
+        # ✅ KORRIGIERT: Logging nur einmal konfigurieren
         self.setup_logging()
         
         # Module initialisieren
@@ -67,13 +65,34 @@ class EnergySystemOptimizer:
             path.mkdir(parents=True, exist_ok=True)
     
     def setup_logging(self):
-        """Richtet das Logging-System ein."""
-        # Haupt-Logger
-        self.logger = logging.getLogger('main')
-        self.logger.setLevel(logging.INFO)
+        """✅ KORRIGIERT: Richtet das Logging-System nur einmal ein."""
         
-        # Console Handler
-        console_handler = logging.StreamHandler()
+        # ✅ ROOT-LOGGER ZURÜCKSETZEN um Duplikate zu vermeiden
+        root_logger = logging.getLogger()
+        root_logger.handlers.clear()  # Alle bestehenden Handler entfernen
+        
+        # ✅ ALLE MODULE-LOGGER ZURÜCKSETZEN
+        module_loggers = [
+            'main',
+            'modules.excel_reader',
+            'modules.system_builder', 
+            'modules.optimizer',
+            'modules.results_processor',
+            'modules.visualizer',
+            'modules.analyzer',
+            'modules.timestep_manager',
+            'modules.timestep_visualizer',
+            'modules.network_visualizer'
+        ]
+        
+        for logger_name in module_loggers:
+            logger = logging.getLogger(logger_name)
+            logger.handlers.clear()  # Alle Handler entfernen
+            logger.propagate = False  # Propagation deaktivieren
+            logger.setLevel(logging.INFO)
+        
+        # ✅ EINEN GLOBALEN CONSOLE-HANDLER erstellen
+        console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(logging.INFO)
         
         # Formatter
@@ -82,12 +101,26 @@ class EnergySystemOptimizer:
         )
         console_handler.setFormatter(formatter)
         
-        # Handler hinzufügen
-        if not self.logger.handlers:
-            self.logger.addHandler(console_handler)
+        # ✅ NUR ZUM MAIN-LOGGER hinzufügen (vermeidet Duplikate)
+        self.logger = logging.getLogger('main')
+        self.logger.addHandler(console_handler)
+        self.logger.setLevel(logging.INFO)
+        
+        # ✅ ALLE ANDEREN LOGGER verwenden den gleichen Handler
+        for logger_name in module_loggers[1:]:  # Alle außer 'main'
+            logger = logging.getLogger(logger_name)
+            logger.addHandler(console_handler)
+            logger.setLevel(logging.INFO)
+        
+        # ✅ KEIN DOPPELTES LOG beim Start
+        self.logger.info("✅ Logging-System initialisiert")
     
     def initialize_modules(self):
+<<<<<<< HEAD
         """Initialisiert alle Module mit Enhanced Results Processor."""
+=======
+        """Initialisiert alle Module mit korrigiertem Logging."""
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
         
         # Basis-Einstellungen (unverändert)
         self.settings = {
@@ -123,7 +156,12 @@ class EnergySystemOptimizer:
                 'analyzer': self.analyzer
             }
             
+<<<<<<< HEAD
             self.logger.info(f"✅ {len(self.modules)} Module initialisiert (mit Enhanced Results Processing)")
+=======
+            # ✅ NUR EINMAL loggen
+            self.logger.info(f"✅ {len(self.modules)} Module initialisiert")
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
             
         except Exception as e:
             self.logger.error(f"❌ Fehler bei der Modul-Initialisierung: {e}")
@@ -139,7 +177,7 @@ class EnergySystemOptimizer:
             excel_files = list(examples_dir.glob('*.xlsx'))
             
             for excel_file in excel_files:
-                if not excel_file.name.startswith('~'):  # Temporäre Excel-Dateien ignorieren
+                if not excel_file.name.startswith('~'):
                     self.available_projects.append({
                         'name': excel_file.stem,
                         'file': excel_file,
@@ -157,7 +195,7 @@ class EnergySystemOptimizer:
         print("3. 📁 Neues Beispielprojekt erstellen")
         print("4. 🔧 Projektstruktur einrichten")
         print("5. ℹ️  Projektinformationen anzeigen")
-        print("6. 🕒 Timestep-Management testen")  # NEU
+        print("6. 🕒 Timestep-Management testen")
         print("7. ❌ Beenden")
         
         try:
@@ -195,7 +233,11 @@ class EnergySystemOptimizer:
             return None
     
     def run_project(self, project: Dict[str, Any]):
+<<<<<<< HEAD
         """Führt ein Projekt mit Enhanced Results Processing durch."""
+=======
+        """✅ KORRIGIERT: Führt ein Projekt ohne doppeltes Logging durch."""
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
         project_name = project['name']
         project_file = project['file']
         
@@ -212,7 +254,11 @@ class EnergySystemOptimizer:
         project_settings['project_name'] = project_name
         project_settings['base_output_dir'] = self.directories['output']
         
+<<<<<<< HEAD
         # Excel-Reader mit aktualisierten Settings
+=======
+        # Excel-Reader mit den aktualisierten Settings versorgen
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
         self.excel_reader.settings = project_settings
         
         # GEÄNDERT: Enhanced Results Processor konfigurieren
@@ -222,8 +268,13 @@ class EnergySystemOptimizer:
         self.visualizer.output_dir = project_output_dir
         self.analyzer.output_dir = project_output_dir
         
+<<<<<<< HEAD
         # File-Logger einrichten
         self.setup_project_logging(project_output_dir, project_name)
+=======
+        # ✅ KORRIGIERT: File-Logger OHNE neue Console-Handler
+        self.setup_project_file_logging(project_output_dir, project_name)
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
         
         try:
             self.logger.info("🎯 Starte Projektausführung mit Enhanced Results Processing")
@@ -235,7 +286,11 @@ class EnergySystemOptimizer:
             
             self.logger.info(f"✅ Eingabedatei validiert: {project_file.name}")
             
+<<<<<<< HEAD
             # 📊 Schritt 1: Excel-Daten einlesen (mit Timestep-Management)
+=======
+            # Schritt 1: Excel-Daten einlesen (MIT TIMESTEP-MANAGEMENT)
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
             self.logger.info("📊 Schritt 1: Excel-Daten einlesen")
             step_start = time.time()
             
@@ -249,10 +304,17 @@ class EnergySystemOptimizer:
             for key, value in summary.items():
                 self.logger.info(f"   📋 {key}: {value}")
             
+<<<<<<< HEAD
             # Timestep-Management Ergebnisse loggen
             self.log_timestep_management_results(excel_data, project_output_dir)
             
             # 🏗️ Schritt 2: Energiesystem aufbauen
+=======
+            # TIMESTEP-MANAGEMENT ERGEBNISSE LOGGEN
+            self.log_timestep_management_results(excel_data, project_output_dir)
+            
+            # Schritt 2: Energiesystem aufbauen
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
             self.logger.info("🏗️  Schritt 2: Energiesystem aufbauen")
             step_start = time.time()
             
@@ -266,7 +328,7 @@ class EnergySystemOptimizer:
             for key, value in system_summary.items():
                 self.logger.info(f"   🔧 {key}: {value}")
             
-            # ⚡ Schritt 3: Optimierung durchführen
+            # Schritt 3: Optimierung durchführen
             self.logger.info("⚡ Schritt 3: Optimierung durchführen")
             step_start = time.time()
             
@@ -280,8 +342,13 @@ class EnergySystemOptimizer:
             for key, value in opt_summary.items():
                 self.logger.info(f"   ⚡ {key}: {value}")
             
+<<<<<<< HEAD
             # 📈 Schritt 4: ENHANCED RESULTS PROCESSING
             self.logger.info("📈 Schritt 4: Enhanced Results Processing mit vollständiger Kostenanalyse")
+=======
+            # Schritt 4: Ergebnisse verarbeiten
+            self.logger.info("📈 Schritt 4: Ergebnisse verarbeiten")
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
             step_start = time.time()
             
             # GEÄNDERT: Enhanced Results Processing verwenden
@@ -298,13 +365,18 @@ class EnergySystemOptimizer:
             # Erstellte Dateien loggen
             output_files = getattr(self.results_processor, 'output_files', [])
             if output_files:
+<<<<<<< HEAD
                 self.logger.info(f"   💾 {len(output_files)} Enhanced Result-Dateien erstellt:")
                 for output_file in output_files[:10]:  # Erste 10 anzeigen
+=======
+                self.logger.info(f"   💾 {len(output_files)} Dateien erstellt:")
+                for output_file in output_files[:5]:
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
                     self.logger.info(f"      • {Path(output_file).name}")
                 if len(output_files) > 10:
                     self.logger.info(f"      ... und {len(output_files) - 10} weitere")
             
-            # 📊 Schritt 5: Visualisierungen erstellen
+            # Schritt 5: Visualisierungen erstellen
             if self.settings.get('create_visualizations', True):
                 self.logger.info("📊 Schritt 5: Ergebnisse visualisieren")
                 step_start = time.time()
@@ -325,7 +397,7 @@ class EnergySystemOptimizer:
             else:
                 self.logger.info("⏭️  Schritt 5: Visualisierungen übersprungen (deaktiviert)")
             
-            # 🔍 Schritt 6: Vertiefende Analysen (optional)
+            # Schritt 6: Vertiefende Analysen (optional)
             if self.settings.get('create_analysis', False):
                 self.logger.info("🔍 Schritt 6: Vertiefende Analysen")
                 step_start = time.time()
@@ -369,6 +441,7 @@ class EnergySystemOptimizer:
             if self.settings.get('debug_mode', False):
                 import traceback
                 traceback.print_exc()
+<<<<<<< HEAD
 
     def log_enhanced_results(self, processed_results: Dict[str, Any]):
         """Loggt die Ergebnisse der Enhanced Results Processing."""
@@ -639,9 +712,52 @@ class EnergySystemOptimizer:
             
         except Exception as e:
             self.logger.warning(f"Enhanced Projekt-Zusammenfassung konnte nicht erstellt werden: {e}")    
+=======
+    
+    def setup_project_file_logging(self, output_dir: Path, project_name: str):
+        """✅ KORRIGIERT: Fügt nur File-Handler hinzu, keine neuen Console-Handler."""
+        try:
+            # File Handler für dieses Projekt
+            log_file = output_dir / f"{project_name}.log"
+            
+            file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
+            file_handler.setLevel(logging.INFO)
+            
+            # Formatter
+            formatter = logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            )
+            file_handler.setFormatter(formatter)
+            
+            # ✅ NUR FILE-HANDLER zu allen Loggern hinzufügen
+            module_loggers = [
+                'main',
+                'modules.excel_reader',
+                'modules.system_builder',
+                'modules.optimizer',
+                'modules.results_processor',
+                'modules.visualizer',
+                'modules.analyzer',
+                'modules.timestep_manager',
+                'modules.timestep_visualizer',
+                'modules.network_visualizer'
+            ]
+            
+            for logger_name in module_loggers:
+                logger = logging.getLogger(logger_name)
+                
+                # ✅ ENTFERNE NUR alte File-Handler, behalte Console-Handler
+                logger.handlers = [h for h in logger.handlers if not isinstance(h, logging.FileHandler)]
+                
+                # ✅ NUR den neuen File-Handler hinzufügen
+                logger.addHandler(file_handler)
+                
+        except Exception as e:
+            self.logger.warning(f"Projekt-File-Logging konnte nicht eingerichtet werden: {e}")
+>>>>>>> parent of 41c291f (Revert "Log akutalisiert. Bug entfernt, dass Log nchrichten Doppelt erscheinen")
     
     def log_timestep_management_results(self, excel_data: Dict[str, Any], project_output_dir: Path):
-        """Loggt die Ergebnisse des Timestep-Managements mit korrektem Output-Verzeichnis."""
+        """Loggt die Ergebnisse des Timestep-Managements."""
         
         # Timestep-Reduktions-Statistiken
         if 'timestep_reduction_stats' in excel_data:
@@ -676,55 +792,8 @@ class EnergySystemOptimizer:
                 self.logger.info(f"   🎨 {len(viz_files)} Timestep-Visualisierungen erstellt in:")
                 self.logger.info(f"      📁 {project_output_dir.relative_to(self.project_root)}")
                 for viz_file in viz_files:
-                    # Zeige nur den Dateinamen, nicht den vollständigen Pfad
                     file_path = Path(viz_file)
                     self.logger.info(f"      📊 {file_path.name}")
-                    
-                    # Prüfe ob die Datei wirklich im richtigen Verzeichnis ist
-                    if not file_path.is_absolute():
-                        file_path = project_output_dir / file_path.name
-                    
-                    if file_path.exists():
-                        self.logger.debug(f"✅ Timestep-Visualisierung bestätigt: {file_path}")
-                    else:
-                        self.logger.warning(f"⚠️  Timestep-Visualisierung nicht gefunden: {file_path}")
-    
-    def setup_project_logging(self, output_dir: Path, project_name: str):
-        """Richtet projektspezifisches Logging ein."""
-        try:
-            # File Handler für dieses Projekt
-            log_file = output_dir / f"{project_name}.log"
-            
-            file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
-            file_handler.setLevel(logging.INFO)
-            
-            # Formatter
-            formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-            )
-            file_handler.setFormatter(formatter)
-            
-            # Zu allen Loggern hinzufügen
-            loggers = [
-                logging.getLogger('main'),
-                logging.getLogger('modules.excel_reader'),
-                logging.getLogger('modules.system_builder'),
-                logging.getLogger('modules.optimizer'),
-                logging.getLogger('modules.results_processor'),
-                logging.getLogger('modules.visualizer'),
-                logging.getLogger('modules.analyzer'),
-                logging.getLogger('modules.timestep_manager'),  # NEU
-                logging.getLogger('modules.timestep_visualizer')  # NEU
-            ]
-            
-            for logger in loggers:
-                # Entferne alte File Handler
-                logger.handlers = [h for h in logger.handlers if not isinstance(h, logging.FileHandler)]
-                # Füge neuen hinzu
-                logger.addHandler(file_handler)
-                
-        except Exception as e:
-            self.logger.warning(f"Projekt-Logging konnte nicht eingerichtet werden: {e}")
     
     def create_project_summary(self, project_name: str, excel_data: Dict[str, Any],
                              energy_system: Any, optimization_model: Any, 
@@ -800,7 +869,7 @@ class EnergySystemOptimizer:
         print("2. Visualisierungen ein/ausschalten")
         print("3. Analysen ein/ausschalten")
         print("4. Debug-Modus ein/ausschalten")
-        print("5. Timestep-Management testen")  # NEU
+        print("5. Timestep-Management testen")
         print("6. Zurück zum Hauptmenü")
         
         try:
@@ -815,7 +884,7 @@ class EnergySystemOptimizer:
             elif choice == "4":
                 self.toggle_debug_mode()
             elif choice == "5":
-                self.test_timestep_management()  # NEU
+                self.test_timestep_management()
             elif choice == "6":
                 return
             else:
