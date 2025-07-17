@@ -1,196 +1,156 @@
 #!/usr/bin/env python3
 """
-oemof.solph 0.6.0 Interaktives Hauptprogramm
-=============================================
+oemof.solph 0.6.0 Energiesystem-Optimierung - Interaktives Hauptprogramm
+======================================================================
 
-Benutzerfreundliches Interface für die Energiesystemmodellierung
-mit interaktiver Projektverwaltung und Modulkonfiguration.
-
-Erweitert um System-Export-Konfiguration.
+Refactored main runner mit modularer Architektur.
+Verwendet das neue Menu-System, Project-Selector und Configuration-Manager.
 
 Autor: [Ihr Name]
 Datum: Juli 2025
-Version: 1.1.0 (mit System Export)
+Version: 2.0.0 (Refactored)
 """
 
 import sys
-import time
 import logging
-import tempfile
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 
-# Projektmodule importieren
+# Neue modulare Komponenten
+from ui.menu_system import MenuSystem
+from ui.project_selector import ProjectSelector
+from config.config_manager import ConfigManager
+from utils.file_utils import FileUtils
+
+# Importiere die main-Funktion aus dem ursprünglichen main.py
 try:
-    from modules.excel_reader import ExcelReader
-    from modules.system_builder import SystemBuilder
-    from modules.optimizer import Optimizer
-    from modules.results_processor import ResultsProcessor
-    from modules.visualizer import Visualizer
-    from modules.analyzer import Analyzer
     from main import main_program
 except ImportError as e:
-    print(f"❌ Fehler beim Importieren der Module: {e}")
-    print("Stellen Sie sicher, dass alle Module im 'modules/' Verzeichnis vorhanden sind.")
+    print(f"❌ Fehler beim Importieren von main.py: {e}")
+    print("Stellen Sie sicher, dass main.py im selben Verzeichnis vorhanden ist.")
     sys.exit(1)
 
 
 class ProjectRunner:
-    """Interaktive Projektverwaltung und -ausführung."""
+    """
+    Hauptklasse für das interaktive Programm.
+    Orchestriert die verschiedenen Komponenten.
+    """
     
     def __init__(self):
         """Initialisiert den Project Runner."""
-        # Projektstruktur einrichten
-        self.setup_project_structure()
-        
-        # Logging einrichten
         self.setup_logging()
         
-        # Standard-Einstellungen
-        self.initialize_settings()
+        # Projekt-Grundkonfiguration
+        self.project_root = Path.cwd()
+        self.logger = logging.getLogger(__name__)
         
-        # Verfügbare Projekte laden
-        self.load_available_projects()
-    
-    def setup_project_structure(self):
-        """Erstellt die erforderliche Projektstruktur."""
-        self.project_root = Path(__file__).parent
+        # Komponenten initialisieren
+        self.file_utils = FileUtils()
+        self.config_manager = ConfigManager(self.project_root)
+        self.menu_system = MenuSystem()
         
         # Verzeichnisse erstellen
-        self.directories = {
-            'examples': self.project_root / 'examples',
-            'data': self.project_root / 'data',
-            'output': self.project_root / 'data' / 'output',
-            'modules': self.project_root / 'modules',
-            'logs': self.project_root / 'logs'
-        }
+        self.directories = self.setup_directories()
         
-        for name, path in self.directories.items():
-            path.mkdir(parents=True, exist_ok=True)
+        # Project Selector initialisieren
+        self.project_selector = ProjectSelector(self.directories['examples'])
+        
+        # Menu-Handler registrieren
+        self.register_menu_handlers()
+        
+        self.logger.info("ProjectRunner initialisiert")
     
     def setup_logging(self):
-        """Richtet das Logging-System ein - oemof.solph 0.6.0 kompatibel."""
-        # FIX: Root-Logger NIEMALS auf DEBUG wegen oemof.solph Performance-Problem
-        logging.getLogger().setLevel(logging.INFO)
+        """Konfiguriert das Logging-System."""
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.StreamHandler(sys.stdout)
+            ]
+        )
         
-        self.logger = logging.getLogger('runme')
-        self.logger.setLevel(logging.INFO)
-        
-        # Console Handler
-        if not self.logger.handlers:
-            console_handler = logging.StreamHandler()
-            console_handler.setLevel(logging.INFO)
-            
-            formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-            )
-            console_handler.setFormatter(formatter)
-            self.logger.addHandler(console_handler)
+        # oemof.solph Logging-Problem umgehen
+        logging.getLogger('oemof.solph').setLevel(logging.WARNING)
+        logging.getLogger('oemof.network').setLevel(logging.WARNING)
+        logging.getLogger('pyomo').setLevel(logging.WARNING)
     
-    def initialize_settings(self):
-        """Initialisiert die Standard-Einstellungen."""
-        # Module-Konfiguration
-        self.modules = {
-            'excel_reader': True,
-            'system_builder': True,
-            'optimizer': True,
-            'results_processor': True,
-            'visualizer': False,
-            'analyzer': False,
-            'system_exporter': False  # NEU: Standardmäßig deaktiviert
-        }
+    def setup_directories(self) -> Dict[str, Path]:
+        """
+        Richtet die Verzeichnisstruktur ein.
         
-        # System-Einstellungen
-        self.settings = {
-            'solver': 'cbc',
-            'debug_mode': False,  # FIX: Standardmäßig FALSE wegen oemof.solph Logging-Problem
-            'output_format': 'xlsx',
-            'create_visualizations': True,
-            'create_analysis': False,
-            'save_model': False,
-            'project_root': self.project_root,
-            'output_dir': self.directories['output'],
-            # NEU: Export-Einstellungen
-            'export_formats': ['json', 'yaml', 'txt']
-        }
+        Returns:
+            Dictionary mit Verzeichnis-Pfaden
+        """
+        directory_config = self.config_manager.get_directories()
+        
+        # Pfade als Path-Objekte konvertieren
+        directories = {}
+        for name, path_str in directory_config.items():
+            directories[name] = self.project_root / path_str
+        
+        # Verzeichnisse erstellen
+        return self.file_utils.ensure_directory_structure(directories)
     
-    def load_available_projects(self):
-        """Lädt verfügbare Projekte aus dem examples/ Verzeichnis."""
-        self.available_projects = []
-        
-        examples_dir = self.directories['examples']
-        
-        if examples_dir.exists():
-            excel_files = list(examples_dir.glob('*.xlsx'))
-            
-            for excel_file in excel_files:
-                if not excel_file.name.startswith('~'):  # Temporäre Excel-Dateien ignorieren
-                    self.available_projects.append({
-                        'name': excel_file.stem,
-                        'file': excel_file,
-                        'description': f"Beispiel - {excel_file.name}"
-                    })
-            
-            self.available_projects.sort(key=lambda x: x['name'])
+    def register_menu_handlers(self):
+        """Registriert die Handler für das Menü-System."""
+        self.menu_system.set_handler("1", self.handle_run_project)
+        self.menu_system.set_handler("2", self.handle_configure_modules)
+        self.menu_system.set_handler("3", self.handle_create_project)
+        self.menu_system.set_handler("4", self.handle_setup_structure)
+        self.menu_system.set_handler("5", self.handle_show_project_info)
+        self.menu_system.set_handler("6", self.handle_test_functions)
     
-    def show_main_menu(self):
-        """Zeigt das Hauptmenü an."""
-        print("\n📋 HAUPTMENÜ")
-        print("-" * 40)
-        print("1. 🚀 Projekt ausführen")
-        print("2. ⚙️  Module konfigurieren")
-        print("3. 📁 Neues Beispielprojekt erstellen")
-        print("4. 🔧 Projektstruktur einrichten")
-        print("5. ℹ️  Projektinformationen anzeigen")
-        print("6. 🧪 Test-Funktionen")
-        print("7. ❌ Beenden")
+    def handle_run_project(self):
+        """Handler für Projekt-Ausführung."""
+        project = self.project_selector.show_project_menu()
         
-        try:
-            choice = input("\nOption auswählen (1-7): ").strip()
-            return choice
-        except KeyboardInterrupt:
-            print("\n👋 Programm beendet.")
-            return "7"
+        if project:
+            self.run_project(project)
     
-    def show_project_menu(self):
-        """Zeigt verfügbare Projekte an."""
-        if not self.available_projects:
-            print("❌ Keine Projekte im 'examples/' Verzeichnis gefunden.")
-            print("Erstellen Sie zunächst ein Beispielprojekt (Option 3).")
-            return None
-        
-        print("\n📂 VERFÜGBARE PROJEKTE")
-        print("-" * 40)
-        
-        for i, project in enumerate(self.available_projects, 1):
-            print(f" {i}. 📋 {project['description']}")
-        
-        try:
-            choice = input("\nProjekt auswählen (Nummer): ").strip()
-            project_idx = int(choice) - 1
-            
-            if 0 <= project_idx < len(self.available_projects):
-                return self.available_projects[project_idx]
-            else:
-                print("❌ Ungültige Auswahl.")
-                return None
-                
-        except (ValueError, KeyboardInterrupt):
-            print("❌ Ungültige Eingabe.")
-            return None
+    def handle_configure_modules(self):
+        """Handler für Modul-Konfiguration."""
+        self.configure_modules()
+    
+    def handle_create_project(self):
+        """Handler für Projekt-Erstellung."""
+        self.create_new_project()
+    
+    def handle_setup_structure(self):
+        """Handler für Struktur-Setup."""
+        self.setup_project_structure_interactive()
+    
+    def handle_show_project_info(self):
+        """Handler für Projekt-Informationen."""
+        self.show_project_info()
+    
+    def handle_test_functions(self):
+        """Handler für Test-Funktionen."""
+        self.test_functions()
     
     def run_project(self, project: Dict[str, Any]):
-        """Führt ein Projekt durch."""
+        """
+        Führt ein Projekt durch.
+        
+        Args:
+            project: Projekt-Informationen
+        """
         project_name = project['name']
         project_file = project['file']
         
-        print(f"🚀 Starte Projekt: {project_file.name}")
-        self.logger.info(f"🚀 Starte Projekt: {project_name}")
+        # Projekt validieren
+        if not self.project_selector.validate_project(project):
+            self.menu_system.show_error("Projekt-Validierung fehlgeschlagen")
+            return
         
-        # Konfiguration für dieses Projekt zusammenstellen
+        self.menu_system.show_info(f"Starte Projekt: {project_file.name}")
+        self.logger.info(f"Starte Projekt: {project_name}")
+        
+        # Konfiguration zusammenstellen
         config = {
-            'modules': self.modules.copy(),
-            'settings': self.settings.copy()
+            'modules': self.config_manager.get_module_config(),
+            'settings': self.config_manager.get_settings()
         }
         
         try:
@@ -198,276 +158,260 @@ class ProjectRunner:
             success = main_program(project_file, config)
             
             if success:
-                print(f"\n✅ Projekt '{project_name}' erfolgreich abgeschlossen!")
-                
-                # Output-Verzeichnis anzeigen
-                output_dir = Path("data/output") / project_name
-                if output_dir.exists():
-                    output_files = list(output_dir.glob("*"))
-                    print(f"📁 {len(output_files)} Dateien erstellt in: {output_dir}")
-                    
-                    # System-Export-Dateien hervorheben
-                    export_dir = output_dir / "system_exports"
-                    if export_dir.exists():
-                        export_files = list(export_dir.glob("*"))
-                        if export_files:
-                            print(f"📤 {len(export_files)} System-Export-Dateien:")
-                            for export_file in export_files:
-                                print(f"   • {export_file.name}")
+                self.menu_system.show_success(f"Projekt '{project_name}' erfolgreich abgeschlossen!")
+                self.show_output_summary(project_name)
             else:
-                print(f"\n❌ Projekt '{project_name}' fehlgeschlagen!")
+                self.menu_system.show_error(f"Projekt '{project_name}' fehlgeschlagen!")
                 
         except Exception as e:
-            print(f"\n❌ Fehler bei der Projektausführung: {e}")
-            if self.settings.get('debug_mode', False):
+            self.menu_system.show_error(f"Fehler bei der Projektausführung: {e}")
+            if self.config_manager.get_setting('debug_mode', False):
                 import traceback
                 traceback.print_exc()
     
+    def show_output_summary(self, project_name: str):
+        """
+        Zeigt eine Zusammenfassung der Output-Dateien.
+        
+        Args:
+            project_name: Name des Projekts
+        """
+        output_dir = self.directories['output'] / project_name
+        
+        if not output_dir.exists():
+            return
+        
+        output_files = list(output_dir.glob("*"))
+        print(f"📁 {len(output_files)} Dateien erstellt in: {output_dir}")
+        
+        # System-Export-Dateien hervorheben
+        export_dir = output_dir / "system_exports"
+        if export_dir.exists():
+            export_files = list(export_dir.glob("*"))
+            if export_files:
+                print(f"📤 {len(export_files)} System-Export-Dateien:")
+                for export_file in export_files:
+                    print(f"   • {export_file.name}")
+    
     def configure_modules(self):
         """Konfiguriert Module-Einstellungen."""
-        print("\n⚙️  MODUL-KONFIGURATION")
-        print("-" * 40)
-        print("1. Solver ändern")
-        print("2. Visualisierungen ein/ausschalten")
-        print("3. Analysen ein/ausschalten")
-        print("4. System-Export konfigurieren")  # NEU
-        print("5. Debug-Modus ein/ausschalten")
-        print("6. Output-Format ändern")
-        print("7. Zurück zum Hauptmenü")
-        
-        try:
-            choice = input("\nOption auswählen (1-7): ").strip()
+        while True:
+            print("\n⚙️ MODUL-KONFIGURATION")
+            print("-" * 40)
+            
+            # Aktuelle Modul-Konfiguration anzeigen
+            modules = self.config_manager.get_module_config()
+            for i, (module_name, enabled) in enumerate(modules.items(), 1):
+                status = "✓" if enabled else "✗"
+                print(f" {i}. {status} {module_name}")
+            
+            print(f" {len(modules) + 1}. 🔧 Erweiterte Einstellungen")
+            print(f" {len(modules) + 2}. 💾 Konfiguration speichern")
+            print(f" {len(modules) + 3}. ↩️ Zurück zum Hauptmenü")
+            
+            choice = input("\nOption auswählen: ").strip()
+            
+            try:
+                choice_num = int(choice)
+                module_names = list(modules.keys())
+                
+                if 1 <= choice_num <= len(modules):
+                    # Modul umschalten
+                    module_name = module_names[choice_num - 1]
+                    current_state = modules[module_name]
+                    new_state = not current_state
+                    
+                    self.config_manager.set_module_enabled(module_name, new_state)
+                    
+                    status = "aktiviert" if new_state else "deaktiviert"
+                    self.menu_system.show_success(f"Modul '{module_name}' {status}")
+                
+                elif choice_num == len(modules) + 1:
+                    # Erweiterte Einstellungen
+                    self.configure_advanced_settings()
+                
+                elif choice_num == len(modules) + 2:
+                    # Konfiguration speichern
+                    if self.config_manager.save_config():
+                        self.menu_system.show_success("Konfiguration gespeichert")
+                    else:
+                        self.menu_system.show_error("Fehler beim Speichern der Konfiguration")
+                
+                elif choice_num == len(modules) + 3:
+                    # Zurück
+                    break
+                
+                else:
+                    self.menu_system.show_error("Ungültige Auswahl")
+                    
+            except ValueError:
+                self.menu_system.show_error("Ungültige Eingabe")
+            except KeyboardInterrupt:
+                break
+    
+    def configure_advanced_settings(self):
+        """Konfiguriert erweiterte Einstellungen."""
+        while True:
+            print("\n🔧 ERWEITERTE EINSTELLUNGEN")
+            print("-" * 40)
+            
+            settings = self.config_manager.get_settings()
+            
+            print("1. 🔨 Solver-Einstellungen")
+            print("2. 🐛 Debug-Modus")
+            print("3. 📊 Visualisierung")
+            print("4. 📤 Export-Formate")
+            print("5. 🕒 Timestep-Einstellungen")
+            print("6. 📋 Konfiguration anzeigen")
+            print("7. 🔄 Auf Standards zurücksetzen")
+            print("8. ↩️ Zurück")
+            
+            choice = input("\nOption auswählen: ").strip()
             
             if choice == "1":
-                self.configure_solver()
+                self.configure_solver_settings()
             elif choice == "2":
-                self.toggle_visualizations()
+                self.configure_debug_mode()
             elif choice == "3":
-                self.toggle_analysis()
+                self.configure_visualization()
             elif choice == "4":
-                self.configure_system_export()  # NEU
-            elif choice == "5":
-                self.toggle_debug_mode()
-            elif choice == "6":
-                self.configure_output_format()
-            elif choice == "7":
-                return
-            else:
-                print("❌ Ungültige Auswahl.")
-                
-        except (ValueError, KeyboardInterrupt):
-            print("❌ Ungültige Eingabe.")
-    
-    def configure_solver(self):
-        """Konfiguriert den Solver."""
-        available_solvers = ['cbc', 'glpk', 'gurobi', 'cplex']
-        
-        print(f"\nAktueller Solver: {self.settings['solver']}")
-        print("Verfügbare Solver:")
-        for i, solver in enumerate(available_solvers, 1):
-            print(f"  {i}. {solver}")
-        
-        try:
-            choice = input("\nSolver auswählen (Nummer): ").strip()
-            solver_idx = int(choice) - 1
-            
-            if 0 <= solver_idx < len(available_solvers):
-                new_solver = available_solvers[solver_idx]
-                self.settings['solver'] = new_solver
-                print(f"✅ Solver geändert zu: {new_solver}")
-            else:
-                print("❌ Ungültige Auswahl.")
-                
-        except (ValueError, KeyboardInterrupt):
-            print("❌ Ungültige Eingabe.")
-    
-    def toggle_visualizations(self):
-        """Schaltet Visualisierungen ein/aus."""
-        current = self.modules.get('visualizer', False)
-        self.modules['visualizer'] = not current
-        
-        status = "aktiviert" if self.modules['visualizer'] else "deaktiviert"
-        print(f"✅ Visualisierungen {status}")
-    
-    def toggle_analysis(self):
-        """Schaltet vertiefende Analysen ein/aus."""
-        current = self.modules.get('analyzer', False)
-        self.modules['analyzer'] = not current
-        
-        status = "aktiviert" if self.modules['analyzer'] else "deaktiviert"
-        print(f"✅ Analysen {status}")
-    
-    def configure_system_export(self):
-        """Konfiguriert System-Export-Einstellungen - NEU."""
-        print(f"\n📤 SYSTEM-EXPORT KONFIGURATION")
-        print("-" * 40)
-        
-        current_status = self.modules.get('system_exporter', False)
-        print(f"Aktueller Status: {'Aktiviert' if current_status else 'Deaktiviert'}")
-        
-        if current_status:
-            current_formats = self.settings.get('export_formats', ['json', 'yaml', 'txt'])
-            print(f"Aktuelle Formate: {', '.join(current_formats)}")
-        
-        print("\n1. System-Export aktivieren/deaktivieren")
-        print("2. Export-Formate konfigurieren")
-        print("3. Zurück")
-        
-        try:
-            choice = input("\nOption auswählen (1-3): ").strip()
-            
-            if choice == "1":
-                self.toggle_system_export()
-            elif choice == "2":
                 self.configure_export_formats()
-            elif choice == "3":
-                return
+            elif choice == "5":
+                self.configure_timestep_settings()
+            elif choice == "6":
+                self.config_manager.show_config_summary()
+            elif choice == "7":
+                if self.menu_system.show_confirmation("Konfiguration wirklich zurücksetzen?"):
+                    self.config_manager.reset_to_defaults()
+                    self.menu_system.show_success("Konfiguration zurückgesetzt")
+            elif choice == "8":
+                break
             else:
-                print("❌ Ungültige Auswahl.")
-                
-        except (ValueError, KeyboardInterrupt):
-            print("❌ Ungültige Eingabe.")
+                self.menu_system.show_error("Ungültige Auswahl")
     
-    def toggle_system_export(self):
-        """Schaltet System-Export ein/aus - NEU."""
-        current = self.modules.get('system_exporter', False)
-        self.modules['system_exporter'] = not current
+    def configure_solver_settings(self):
+        """Konfiguriert Solver-Einstellungen."""
+        current_solver = self.config_manager.get_setting('solver', 'cbc')
         
-        status = "aktiviert" if self.modules['system_exporter'] else "deaktiviert"
-        print(f"✅ System-Export {status}")
+        solver_options = {
+            "1": "cbc",
+            "2": "glpk", 
+            "3": "gurobi"
+        }
         
-        if self.modules['system_exporter']:
-            print("💡 System-Export erstellt computer- und menschenlesbare Dateien")
-            print("   mit allen Energiesystem-Parametern vor der Optimierung.")
+        choice = self.menu_system.show_submenu(
+            "🔨 SOLVER AUSWÄHLEN",
+            {k: f"{v} {'(aktuell)' if v == current_solver else ''}" 
+             for k, v in solver_options.items()},
+            "Solver auswählen: "
+        )
+        
+        if choice and choice in solver_options:
+            new_solver = solver_options[choice]
+            self.config_manager.set_setting('solver', new_solver)
+            self.menu_system.show_success(f"Solver auf '{new_solver}' gesetzt")
+    
+    def configure_debug_mode(self):
+        """Konfiguriert Debug-Modus."""
+        current_debug = self.config_manager.get_setting('debug_mode', False)
+        
+        if self.menu_system.show_confirmation(
+            f"Debug-Modus {'deaktivieren' if current_debug else 'aktivieren'}?",
+            default=not current_debug
+        ):
+            self.config_manager.set_setting('debug_mode', not current_debug)
+            status = "aktiviert" if not current_debug else "deaktiviert"
+            self.menu_system.show_success(f"Debug-Modus {status}")
+    
+    def configure_visualization(self):
+        """Konfiguriert Visualisierung."""
+        current_viz = self.config_manager.get_setting('create_visualizations', True)
+        
+        if self.menu_system.show_confirmation(
+            f"Visualisierungen {'deaktivieren' if current_viz else 'aktivieren'}?",
+            default=not current_viz
+        ):
+            self.config_manager.set_setting('create_visualizations', not current_viz)
+            status = "aktiviert" if not current_viz else "deaktiviert"
+            self.menu_system.show_success(f"Visualisierungen {status}")
     
     def configure_export_formats(self):
-        """Konfiguriert gewünschte Export-Formate - NEU."""
+        """Konfiguriert Export-Formate."""
         available_formats = ['json', 'yaml', 'txt']
-        current_formats = self.settings.get('export_formats', ['json', 'yaml', 'txt'])
+        current_formats = self.config_manager.get_setting('export_formats', [])
         
-        print("\nVerfügbare Export-Formate:")
+        print("\n📤 EXPORT-FORMATE KONFIGURIEREN")
+        print("-" * 40)
+        
         for i, fmt in enumerate(available_formats, 1):
-            status = "✓" if fmt in current_formats else " "
-            description = {
-                'json': 'Computer-lesbar, ideal für weitere Verarbeitung',
-                'yaml': 'Computer- und menschenlesbar, strukturiert',
-                'txt': 'Rein menschenlesbar, übersichtlich formatiert'
-            }[fmt]
-            print(f"  {i}. [{status}] {fmt.upper()} - {description}")
+            status = "✓" if fmt in current_formats else "✗"
+            print(f" {i}. {status} {fmt.upper()}")
         
-        print(f"\nAktuell gewählt: {', '.join(current_formats)}")
-        print("Geben Sie die Nummern der gewünschten Formate ein (z.B. 1,3)")
-        print("Oder drücken Sie Enter um aktuelle Auswahl zu behalten:")
+        choice = input("\nFormat umschalten (Nummer): ").strip()
         
         try:
-            user_input = input("Auswahl: ").strip()
-            
-            # Wenn leer, aktuelle Einstellung beibehalten
-            if not user_input:
-                print("✅ Aktuelle Format-Auswahl beibehalten.")
-                return
-            
-            choices = user_input.split(',')
-            selected_formats = []
-            
-            for choice in choices:
-                try:
-                    idx = int(choice.strip()) - 1
-                    if 0 <= idx < len(available_formats):
-                        selected_formats.append(available_formats[idx])
-                    else:
-                        print(f"⚠️  Ungültige Auswahl ignoriert: {choice}")
-                except ValueError:
-                    print(f"⚠️  Ungültige Eingabe ignoriert: {choice}")
-            
-            if selected_formats:
-                self.settings['export_formats'] = selected_formats
-                print(f"✅ Export-Formate konfiguriert: {', '.join(selected_formats)}")
-            else:
-                print("❌ Keine gültigen Formate ausgewählt. Aktuelle Einstellung beibehalten.")
+            choice_num = int(choice)
+            if 1 <= choice_num <= len(available_formats):
+                fmt = available_formats[choice_num - 1]
                 
-        except KeyboardInterrupt:
-            print("\n❌ Abgebrochen.")
-    
-    def toggle_debug_mode(self):
-        """Schaltet Debug-Modus ein/aus - mit oemof.solph Warnung."""
-        current = self.settings.get('debug_mode', False)
-        
-        if not current:
-            # Debug-Modus aktivieren - Warnung anzeigen
-            print("\n⚠️  WARNUNG: Debug-Modus und oemof.solph 0.6.0")
-            print("-" * 50)
-            print("Der Debug-Modus kann die Optimierung um Faktor ~100 verlangsamen")
-            print("aufgrund eines bekannten Problems zwischen oemof.solph und Pyomo.")
-            print("Verwenden Sie Debug-Modus nur für kleine Testmodelle!")
-            print("\nMöchten Sie den Debug-Modus trotzdem aktivieren?")
-            
-            confirm = input("Debug-Modus aktivieren? (j/n): ").strip().lower()
-            if confirm in ['j', 'ja', 'y', 'yes']:
-                self.settings['debug_mode'] = True
-                print("✅ Debug-Modus aktiviert (Vorsicht bei großen Modellen!)")
-            else:
-                print("❌ Debug-Modus bleibt deaktiviert.")
-        else:
-            # Debug-Modus deaktivieren
-            self.settings['debug_mode'] = False
-            print("✅ Debug-Modus deaktiviert (empfohlen für oemof.solph 0.6.0)")
-    
-    
-    def configure_output_format(self):
-        """Konfiguriert das Output-Format."""
-        available_formats = ['xlsx', 'csv', 'json']
-        
-        print(f"\nAktuelles Output-Format: {self.settings['output_format']}")
-        print("Verfügbare Formate:")
-        for i, fmt in enumerate(available_formats, 1):
-            print(f"  {i}. {fmt}")
-        
-        try:
-            choice = input("\nFormat auswählen (Nummer): ").strip()
-            format_idx = int(choice) - 1
-            
-            if 0 <= format_idx < len(available_formats):
-                new_format = available_formats[format_idx]
-                self.settings['output_format'] = new_format
-                print(f"✅ Output-Format geändert zu: {new_format}")
-            else:
-                print("❌ Ungültige Auswahl.")
+                if fmt in current_formats:
+                    current_formats.remove(fmt)
+                    self.menu_system.show_success(f"Format '{fmt}' deaktiviert")
+                else:
+                    current_formats.append(fmt)
+                    self.menu_system.show_success(f"Format '{fmt}' aktiviert")
                 
-        except (ValueError, KeyboardInterrupt):
-            print("❌ Ungültige Eingabe.")
+                self.config_manager.set_setting('export_formats', current_formats)
+                
+        except ValueError:
+            self.menu_system.show_error("Ungültige Eingabe")
+    
+    def configure_timestep_settings(self):
+        """Konfiguriert Timestep-Einstellungen."""
+        timestep_settings = self.config_manager.get_timestep_settings()
+        
+        print("\n🕒 TIMESTEP-EINSTELLUNGEN")
+        print("-" * 40)
+        
+        for key, value in timestep_settings.items():
+            print(f"{key}: {value}")
+        
+        # Hier könnte eine erweiterte Konfiguration implementiert werden
+        self.menu_system.show_info("Timestep-Einstellungen werden über Excel-Dateien konfiguriert")
     
     def create_new_project(self):
         """Erstellt ein neues Beispielprojekt."""
-        print("\n📁 NEUES BEISPIELPROJEKT ERSTELLEN")
-        print("-" * 40)
+        project_name = self.menu_system.show_input_dialog(
+            "Name für das neue Projekt",
+            "new_project"
+        )
+        
+        if not project_name:
+            return
+        
+        output_file = self.directories['examples'] / f"{project_name}.xlsx"
+        
+        if output_file.exists():
+            if not self.menu_system.show_confirmation(
+                f"Datei '{output_file.name}' existiert bereits. Überschreiben?"
+            ):
+                self.menu_system.show_info("Abgebrochen")
+                return
         
         try:
-            from examples.excel_template_creator import create_test_excel_with_timestep_management
-            
-            project_name = input("Projektname eingeben: ").strip()
-            if not project_name:
-                print("❌ Kein Projektname eingegeben.")
-                return
-            
-            output_file = self.directories['examples'] / f"{project_name}.xlsx"
-            
-            if output_file.exists():
-                overwrite = input(f"Datei existiert bereits. Überschreiben? (j/n): ").strip().lower()
-                if overwrite not in ['j', 'ja', 'y', 'yes']:
-                    print("❌ Abgebrochen.")
-                    return
+            # Excel-Template-Creator importieren
+            from excel_template_creator import create_test_excel_with_timestep_management
             
             create_test_excel_with_timestep_management(output_file)
-            print(f"✅ Beispielprojekt erstellt: {output_file}")
+            self.menu_system.show_success(f"Beispielprojekt erstellt: {output_file}")
             
             # Projekte neu laden
-            self.load_available_projects()
+            self.project_selector.refresh_projects()
             
         except ImportError:
-            print("❌ excel_template_creator.py nicht verfügbar.")
+            self.menu_system.show_error("excel_template_creator.py nicht verfügbar")
         except Exception as e:
-            print(f"❌ Fehler beim Erstellen: {e}")
+            self.menu_system.show_error(f"Fehler beim Erstellen: {e}")
     
     def setup_project_structure_interactive(self):
         """Richtet die Projektstruktur interaktiv ein."""
@@ -476,24 +420,28 @@ class ProjectRunner:
         
         print("Erstelle erforderliche Verzeichnisse...")
         
-        for name, path in self.directories.items():
-            if path.exists():
-                print(f"✅ {name}: {path} (bereits vorhanden)")
-            else:
-                path.mkdir(parents=True, exist_ok=True)
-                print(f"📁 {name}: {path} (erstellt)")
+        # Verzeichnisse neu erstellen
+        self.directories = self.setup_directories()
         
-        print("\n✅ Projektstruktur eingerichtet!")
+        for name, path in self.directories.items():
+            print(f"✅ {name}: {path}")
+        
+        self.menu_system.show_success("Projektstruktur eingerichtet!")
         
         # Prüfe auf fehlende Module
+        self.check_missing_modules()
+    
+    def check_missing_modules(self):
+        """Prüft auf fehlende Module."""
         print("\nPrüfe Module...")
-        missing_modules = []
         
         required_modules = [
             'excel_reader', 'system_builder', 'optimizer', 
             'results_processor', 'visualizer', 'analyzer',
-            'energy_system_exporter'  # NEU
+            'energy_system_exporter'
         ]
+        
+        missing_modules = []
         
         for module_name in required_modules:
             module_file = self.directories['modules'] / f"{module_name}.py"
@@ -504,264 +452,150 @@ class ProjectRunner:
                 missing_modules.append(module_name)
         
         if missing_modules:
-            print(f"\n⚠️  Fehlende Module: {', '.join(missing_modules)}")
-            print("Stellen Sie sicher, dass alle Module im 'modules/' Verzeichnis vorhanden sind.")
+            self.menu_system.show_warning(
+                f"Fehlende Module: {', '.join(missing_modules)}",
+                "Stellen Sie sicher, dass alle Module im 'modules/' Verzeichnis vorhanden sind."
+            )
         else:
-            print("\n✅ Alle Module verfügbar!")
+            self.menu_system.show_success("Alle Module verfügbar!")
     
     def show_project_info(self):
         """Zeigt Projektinformationen an."""
-        print("\n ℹ️  PROJEKTINFORMATIONEN")
-        print("-" * 40)
+        print("\n📋 PROJEKTINFORMATIONEN")
+        print("=" * 50)
         
-        print(f"📁 Projektverzeichnis: {self.project_root}")
-        print(f"📊 Verfügbare Projekte: {len(self.available_projects)}")
-        
-        # Module-Status
-        print("\n🔧 MODUL-STATUS:")
-        for module, active in self.modules.items():
-            status = "✅ Aktiviert" if active else "❌ Deaktiviert"
-            if module == 'system_exporter' and active:
-                formats = ', '.join(self.settings.get('export_formats', []))
-                status += f" ({formats})"
-            print(f"   {module}: {status}")
-        
-        # Einstellungen
-        print("\n⚙️  AKTUELLE EINSTELLUNGEN:")
-        for key, value in self.settings.items():
-            if key not in ['project_root', 'output_dir']:  # Pfade ausblenden
-                print(f"   {key}: {value}")
+        # Basis-Informationen
+        print(f"Projektverzeichnis: {self.project_root}")
+        print(f"Verfügbare Projekte: {self.project_selector.get_project_count()}")
         
         # Verzeichnisse
-        print("\n📂 VERZEICHNISSE:")
+        print("\nVerzeichnisse:")
         for name, path in self.directories.items():
             exists = "✅" if path.exists() else "❌"
-            print(f"   {name}: {exists} {path}")
+            print(f"  {exists} {name}: {path}")
         
-        # Verfügbare Projekte
-        if self.available_projects:
-            print(f"\n📋 VERFÜGBARE PROJEKTE ({len(self.available_projects)}):")
-            for project in self.available_projects:
-                print(f"   • {project['name']}")
+        # Zuletzt geänderte Projekte
+        print("\nZuletzt geänderte Projekte:")
+        recent_projects = self.project_selector.get_recent_projects(3)
+        for project in recent_projects:
+            import time
+            mod_time = time.strftime('%Y-%m-%d %H:%M', 
+                                   time.localtime(project['modified']))
+            print(f"  📋 {project['name']} ({mod_time})")
+        
+        # Konfiguration
+        print("\nAktuelle Konfiguration:")
+        modules = self.config_manager.get_module_config()
+        for module, enabled in modules.items():
+            status = "✓" if enabled else "✗"
+            print(f"  {status} {module}")
+        
+        # Validierung
+        errors = self.config_manager.validate_config()
+        if errors:
+            print("\n⚠️ Konfigurationsprobleme:")
+            for error in errors:
+                print(f"  • {error}")
         else:
-            print("\n📋 Keine Projekte gefunden")
+            print("\n✅ Konfiguration gültig")
     
     def test_functions(self):
-        """Zeigt Test-Funktionen an."""
-        print("\n🧪 TEST-FUNKTIONEN")
+        """Führt System-Tests durch."""
+        print("\n🧪 SYSTEM-TESTS")
         print("-" * 40)
-        print("1. System-Export testen")
-        print("2. Module-Import testen")
-        print("3. Beispiel-Projekt validieren")
-        print("4. Zurück")
         
-        try:
-            choice = input("\nOption auswählen (1-4): ").strip()
-            
-            if choice == "1":
-                self.test_system_export()
-            elif choice == "2":
-                self.test_module_imports()
-            elif choice == "3":
-                self.test_example_project()
-            elif choice == "4":
-                return
-            else:
-                print("❌ Ungültige Auswahl.")
-                
-        except (ValueError, KeyboardInterrupt):
-            print("❌ Ungültige Eingabe.")
-    
-    def test_system_export(self):
-        """Testet das System-Export-Modul."""
-        print("\n🧪 SYSTEM-EXPORT TEST")
-        print("-" * 30)
-        
-        try:
-            # Export-Modul importieren und testen
-            from modules.energy_system_exporter import create_export_module, test_export_module
-            
-            print("1. Modul-Import... ", end="")
-            exporter = create_export_module({'debug_mode': True})
-            print("✅")
-            
-            print("2. Metadaten-Erstellung... ", end="")
-            metadata = exporter.export_metadata
-            print("✅")
-            print(f"   Version: {metadata['exporter_version']}")
-            print(f"   Timestamp: {metadata['export_timestamp']}")
-            
-            print("3. Test-Funktion ausführen...")
-            test_export_module()
-            
-            print("\n✅ System-Export-Test erfolgreich!")
-            
-        except ImportError as e:
-            print(f"❌ Import-Fehler: {e}")
-            print("   Das energy_system_exporter Modul ist nicht verfügbar.")
-        except Exception as e:
-            print(f"❌ Test-Fehler: {e}")
-    
-    def test_module_imports(self):
-        """Testet alle Modul-Imports."""
-        print("\n🧪 MODUL-IMPORT TEST")
-        print("-" * 30)
-        
-        modules_to_test = [
-            ('excel_reader', 'ExcelReader'),
-            ('system_builder', 'SystemBuilder'),
-            ('optimizer', 'Optimizer'),
-            ('results_processor', 'ResultsProcessor'),
-            ('visualizer', 'Visualizer'),
-            ('analyzer', 'Analyzer'),
-            ('energy_system_exporter', 'create_export_module')
+        tests = [
+            ("Verzeichnis-Struktur", self.test_directory_structure),
+            ("Module-Verfügbarkeit", self.test_module_availability),
+            ("Konfiguration", self.test_configuration),
+            ("Projekt-Validierung", self.test_project_validation)
         ]
         
-        successful_imports = 0
-        
-        for module_name, class_name in modules_to_test:
+        for test_name, test_func in tests:
             try:
-                print(f"Teste {module_name}... ", end="")
-                module = __import__(f'modules.{module_name}', fromlist=[class_name])
-                getattr(module, class_name)
-                print("✅")
-                successful_imports += 1
-            except ImportError as e:
-                print(f"❌ Import-Fehler: {e}")
-            except AttributeError as e:
-                print(f"❌ Attribut-Fehler: {e}")
+                print(f"\n🔍 Test: {test_name}")
+                result = test_func()
+                if result:
+                    print(f"✅ {test_name}: OK")
+                else:
+                    print(f"❌ {test_name}: FEHLER")
             except Exception as e:
-                print(f"❌ Unbekannter Fehler: {e}")
-        
-        print(f"\n📊 Ergebnis: {successful_imports}/{len(modules_to_test)} Module erfolgreich importiert")
-        
-        if successful_imports == len(modules_to_test):
-            print("✅ Alle Module verfügbar!")
-        else:
-            print("⚠️  Einige Module fehlen oder haben Probleme.")
+                print(f"❌ {test_name}: EXCEPTION - {e}")
+                if self.config_manager.get_setting('debug_mode', False):
+                    import traceback
+                    traceback.print_exc()
     
-    def test_example_project(self):
-        """Testet ein Beispiel-Projekt."""
-        print("\n🧪 BEISPIEL-PROJEKT TEST")
-        print("-" * 30)
+    def test_directory_structure(self) -> bool:
+        """Testet die Verzeichnis-Struktur."""
+        for name, path in self.directories.items():
+            if not path.exists():
+                print(f"  ❌ {name}: {path} nicht gefunden")
+                return False
+            print(f"  ✅ {name}: {path}")
+        return True
+    
+    def test_module_availability(self) -> bool:
+        """Testet die Verfügbarkeit der Module."""
+        required_modules = ['excel_reader', 'system_builder', 'optimizer', 'results_processor']
         
-        if not self.available_projects:
-            print("❌ Keine Beispiel-Projekte verfügbar.")
-            print("Erstellen Sie zunächst ein Projekt (Hauptmenü → Option 3).")
-            return
+        for module_name in required_modules:
+            module_file = self.directories['modules'] / f"{module_name}.py"
+            if not module_file.exists():
+                print(f"  ❌ {module_name}.py nicht gefunden")
+                return False
+            print(f"  ✅ {module_name}.py")
+        return True
+    
+    def test_configuration(self) -> bool:
+        """Testet die Konfiguration."""
+        errors = self.config_manager.validate_config()
+        if errors:
+            for error in errors:
+                print(f"  ❌ {error}")
+            return False
+        print("  ✅ Konfiguration gültig")
+        return True
+    
+    def test_project_validation(self) -> bool:
+        """Testet die Projekt-Validierung."""
+        projects = self.project_selector.available_projects
+        if not projects:
+            print("  ❌ Keine Projekte gefunden")
+            return False
         
-        # Erstes verfügbares Projekt wählen
-        test_project = self.available_projects[0]
-        print(f"Teste Projekt: {test_project['name']}")
+        valid_count = 0
+        for project in projects:
+            if self.project_selector.validate_project(project):
+                valid_count += 1
+                print(f"  ✅ {project['name']}")
+            else:
+                print(f"  ❌ {project['name']}")
         
-        try:
-            # Nur Excel-Reader und System-Builder testen (ohne Optimierung)
-            test_config = {
-                'modules': {
-                    'excel_reader': True,
-                    'system_builder': True,
-                    'optimizer': False,
-                    'results_processor': False,
-                    'visualizer': False,
-                    'analyzer': False,
-                    'system_exporter': self.modules.get('system_exporter', False)
-                },
-                'settings': self.settings.copy()
-            }
-            
-            print("\n1. Excel-Daten einlesen...")
-            excel_reader = ExcelReader(test_config['settings'])
-            excel_data = excel_reader.process_excel_data(test_project['file'])
-            print("✅ Excel-Daten erfolgreich eingelesen")
-            
-            print("2. Energiesystem aufbauen...")
-            system_builder = SystemBuilder(test_config['settings'])
-            energy_system = system_builder.build_energy_system(excel_data)
-            print("✅ Energiesystem erfolgreich aufgebaut")
-            
-            # System-Zusammenfassung
-            summary = system_builder.get_system_summary(energy_system)
-            print("\n📊 SYSTEM-ZUSAMMENFASSUNG:")
-            for key, value in summary.items():
-                print(f"   {key}: {value}")
-            
-            # Optional: System-Export testen
-            if test_config['modules']['system_exporter']:
-                print("\n3. System-Export testen...")
-                from modules.energy_system_exporter import create_export_module
-                
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    exporter = create_export_module(test_config['settings'])
-                    export_files = exporter.export_system(
-                        energy_system=energy_system,
-                        excel_data=excel_data,
-                        output_dir=Path(temp_dir),
-                        formats=['json', 'txt']
-                    )
-                    print(f"✅ System-Export erfolgreich ({len(export_files)} Dateien)")
-                    for fmt, filepath in export_files.items():
-                        print(f"   • {fmt.upper()}: {filepath.name}")
-            
-            print("\n✅ Beispiel-Projekt Test erfolgreich!")
-            
-        except Exception as e:
-            print(f"❌ Test fehlgeschlagen: {e}")
-            if self.settings.get('debug_mode', False):
-                import traceback
-                traceback.print_exc()
+        return valid_count > 0
     
     def run(self):
         """Hauptschleife des Programms."""
-        print("🚀 oemof.solph 0.6.0 Energiesystem-Optimierung")
-        print("=" * 60)
-        print("Interaktives Hauptprogramm mit System-Export")
-        print(f"Projektverzeichnis: {self.project_root}")
-        print(f"Verfügbare Projekte: {len(self.available_projects)}")
+        # Header anzeigen
+        self.menu_system.show_project_header(
+            str(self.project_root),
+            self.project_selector.get_project_count()
+        )
         
+        # Hauptschleife
         while True:
             try:
-                choice = self.show_main_menu()
+                choice = self.menu_system.show_main_menu()
                 
-                if choice == "1":
-                    # Projekt ausführen
-                    project = self.show_project_menu()
-                    if project:
-                        self.run_project(project)
-                
-                elif choice == "2":
-                    # Module konfigurieren
-                    self.configure_modules()
-                
-                elif choice == "3":
-                    # Neues Projekt erstellen
-                    self.create_new_project()
-                
-                elif choice == "4":
-                    # Projektstruktur einrichten
-                    self.setup_project_structure_interactive()
-                
-                elif choice == "5":
-                    # Projektinformationen anzeigen
-                    self.show_project_info()
-                
-                elif choice == "6":
-                    # Test-Funktionen
-                    self.test_functions()
-                
-                elif choice == "7":
-                    # Beenden
-                    print("👋 Auf Wiedersehen!")
+                # Menü-Auswahl verarbeiten
+                if not self.menu_system.handle_choice(choice):
                     break
-                
-                else:
-                    print("❌ Ungültige Auswahl. Bitte wählen Sie 1-7.")
                     
             except KeyboardInterrupt:
                 print("\n\n👋 Programm beendet.")
                 break
             except Exception as e:
-                print(f"\n❌ Unerwarteter Fehler: {e}")
-                if self.settings.get('debug_mode', False):
+                self.menu_system.show_error(f"Unerwarteter Fehler: {e}")
+                if self.config_manager.get_setting('debug_mode', False):
                     import traceback
                     traceback.print_exc()
 
