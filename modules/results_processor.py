@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
 """
-oemof.solph 0.6.0 Results Processor
-===================================
+oemof.solph 0.6.0 Results Processor - Mit Kosten-Analyse
+=======================================================
 
 Verarbeitet Optimierungsergebnisse und erstellt strukturierte Excel-Ausgaben.
-Fokussiert auf die wichtigsten Ergebnisse: Flows, Kapazitäten, Erzeugung, Vollbenutzungsstunden.
+Erweitert um umfassende Kosten-Analyse basierend auf Investment- und variablen Kosten.
+
+Hauptfunktionen:
+- Alle Flows mit Ursprung und Ziel
+- Installierte Kapazitäten
+- Summe der Erzeugung je Node
+- Vollbenutzungsstunden je Node
+- Umfassende Kosten-Analyse
 
 Autor: [Ihr Name]
 Datum: Juli 2025
-Version: 1.0.0
+Version: 2.0.0 (mit Kosten-Analyse)
 """
 
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, List, Any, Optional, Tuple
 import logging
 
 
@@ -22,11 +29,7 @@ class ResultsProcessor:
     """
     Verarbeitet oemof.solph Optimierungsergebnisse und erstellt Excel-Ausgaben.
     
-    Hauptfunktionen:
-    - Alle Flows mit Ursprung und Ziel
-    - Installierte Kapazitäten
-    - Summe der Erzeugung je Node
-    - Vollbenutzungsstunden je Node
+    Erweitert um umfassende Kosten-Analyse mit Investment- und variablen Kosten.
     """
     
     def __init__(self, output_dir: Path, settings: Dict[str, Any]):
@@ -82,9 +85,13 @@ class ResultsProcessor:
         self.logger.info("   ⏱️ Berechne Vollbenutzungsstunden...")
         utilization_df = self._calculate_utilization_hours(generation_df, capacity_df)
         
-        # 5. Excel-Datei erstellen
+        # 5. Kosten-Analyse durchführen
+        self.logger.info("   💰 Führe Kosten-Analyse durch...")
+        cost_analysis = self._analyze_costs(results, energy_system, excel_data)
+        
+        # 6. Excel-Datei erstellen
         self.logger.info("   📄 Erstelle Excel-Ausgabe...")
-        excel_file = self._create_excel_output(flows_df, capacity_df, generation_df, utilization_df)
+        excel_file = self._create_excel_output(flows_df, capacity_df, generation_df, utilization_df, cost_analysis)
         
         # Ergebnisse zusammenstellen
         processed_results = {
@@ -92,6 +99,7 @@ class ResultsProcessor:
             'capacities': capacity_df,
             'generation': generation_df,
             'utilization': utilization_df,
+            'cost_analysis': cost_analysis,
             'excel_file': excel_file
         }
         
@@ -305,18 +313,133 @@ class ResultsProcessor:
         else:
             return pd.DataFrame(columns=['node', 'capacity_MW', 'generation_MWh', 'utilization_hours'])
     
+    def _analyze_costs(self, results: Dict[str, Any], 
+                      energy_system: Any, 
+                      excel_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Führt eine umfassende Kosten-Analyse durch.
+        
+        Args:
+            results: oemof.solph Optimierungsergebnisse
+            energy_system: Das optimierte EnergySystem
+            excel_data: Original Excel-Daten
+            
+        Returns:
+            Dictionary mit Kosten-Analyse
+        """
+        try:
+            # CostAnalyzer importieren und verwenden
+            from .cost_analyzer import CostAnalyzer
+            
+            settings = {
+                'power_unit': 'MW',
+                'energy_unit': 'MWh', 
+                'currency_unit': '€',
+                'time_increment': 1,
+                'debug_mode': self.settings.get('debug_mode', False)
+            }
+            
+            analyzer = CostAnalyzer(self.output_dir, settings)
+            cost_analysis = analyzer.analyze_costs(results, energy_system, excel_data)
+            
+            return cost_analysis
+            
+        except ImportError:
+            # Fallback: Einfache Kosten-Berechnung
+            self.logger.warning("CostAnalyzer nicht verfügbar - verwende einfache Kosten-Berechnung")
+            return self._simple_cost_calculation(results, energy_system)
+        except Exception as e:
+            self.logger.error(f"Fehler bei Kosten-Analyse: {e}")
+            return self._simple_cost_calculation(results, energy_system)
+    
+    def _simple_cost_calculation(self, results: Dict[str, Any], 
+                                energy_system: Any) -> Dict[str, Any]:
+        """
+        Einfache Kosten-Berechnung als Fallback.
+        
+        Args:
+            results: oemof.solph Optimierungsergebnisse
+            energy_system: Das optimierte EnergySystem
+            
+        Returns:
+            Dictionary mit einfacher Kosten-Analyse
+        """
+        total_investment = 0
+        total_variable = 0
+        
+        try:
+            # Einfache Investment-Kosten
+            for node in energy_system.nodes:
+                if hasattr(node, 'outputs'):
+                    for target_node, flow in node.outputs.items():
+                        if hasattr(flow, 'investment') and flow.investment is not None:
+                            source_label = str(node.label)
+                            target_label = str(target_node.label)
+                            
+                            for (result_source, result_target), flow_results in results.items():
+                                if (str(result_source) == source_label and 
+                                    str(result_target) == target_label):
+                                    
+                                    if 'scalars' in flow_results and 'invest' in flow_results['scalars']:
+                                        invested_capacity = flow_results['scalars']['invest']
+                                        
+                                        # Vereinfachte EP-Costs
+                                        ep_costs = 100  # Default-Wert
+                                        if hasattr(flow.investment, 'ep_costs'):
+                                            ep_costs_attr = flow.investment.ep_costs
+                                            if hasattr(ep_costs_attr, 'tolist'):
+                                                ep_costs = ep_costs_attr.tolist()[0]
+                                            else:
+                                                ep_costs = float(ep_costs_attr)
+                                        
+                                        total_investment += ep_costs * invested_capacity
+            
+            # Einfache variable Kosten
+            for (source, target), flow_results in results.items():
+                if 'sequences' in flow_results and 'flow' in flow_results['sequences']:
+                    flow_sequence = flow_results['sequences']['flow']
+                    total_energy = flow_sequence.sum()
+                    
+                    # Vereinfachte variable Kosten (z.B. aus Excel-Daten)
+                    var_cost = 0.1  # Default-Wert
+                    total_variable += var_cost * total_energy
+        
+        except Exception as e:
+            self.logger.warning(f"Fehler bei einfacher Kosten-Berechnung: {e}")
+        
+        return {
+            'cost_summary': {
+                'total_costs': total_investment + total_variable,
+                'investment_costs': total_investment,
+                'variable_costs': total_variable,
+                'investment_share': total_investment / (total_investment + total_variable) if (total_investment + total_variable) > 0 else 0,
+                'variable_share': total_variable / (total_investment + total_variable) if (total_investment + total_variable) > 0 else 0,
+                'avg_hourly_costs': 0,
+                'max_hourly_costs': 0,
+                'currency_unit': '€'
+            },
+            'investment_costs': pd.DataFrame(),
+            'variable_costs': pd.DataFrame(),
+            'hourly_costs': pd.DataFrame(),
+            'technology_costs': {},
+            'utilization_costs': pd.DataFrame(),
+            'total_system_costs': total_investment + total_variable
+        }
+    
     def _create_excel_output(self, flows_df: pd.DataFrame, 
                            capacity_df: pd.DataFrame,
                            generation_df: pd.DataFrame,
-                           utilization_df: pd.DataFrame) -> Path:
+                           utilization_df: pd.DataFrame,
+                           cost_analysis: Dict[str, Any]) -> Path:
         """
-        Erstellt eine Excel-Datei mit allen Ergebnissen.
+        Erstellt eine Excel-Datei mit allen Ergebnissen inkl. Kosten-Analyse.
         
         Args:
             flows_df: Flow-Daten
             capacity_df: Kapazitätsdaten
             generation_df: Erzeugungsdaten
             utilization_df: Vollbenutzungsstunden
+            cost_analysis: Kosten-Analyse
             
         Returns:
             Pfad zur erstellten Excel-Datei
@@ -330,13 +453,16 @@ class ResultsProcessor:
                     flows_df.to_excel(writer, sheet_name='Flows', index=False)
                     
                     # Pivot-Tabelle für bessere Übersicht
-                    flows_pivot = flows_df.pivot_table(
-                        index='timestamp',
-                        columns=['source', 'target'],
-                        values='flow_MW',
-                        fill_value=0
-                    )
-                    flows_pivot.to_excel(writer, sheet_name='Flows_Pivot')
+                    try:
+                        flows_pivot = flows_df.pivot_table(
+                            index='timestamp',
+                            columns=['source', 'target'],
+                            values='flow_MW',
+                            fill_value=0
+                        )
+                        flows_pivot.to_excel(writer, sheet_name='Flows_Pivot')
+                    except Exception as e:
+                        self.logger.warning(f"Flows-Pivot konnte nicht erstellt werden: {e}")
                 
                 # Sheet 2: Kapazitäten
                 if not capacity_df.empty:
@@ -350,8 +476,49 @@ class ResultsProcessor:
                 if not utilization_df.empty:
                     utilization_df.to_excel(writer, sheet_name='Utilization', index=False)
                 
-                # Sheet 5: Zusammenfassung
-                summary_data = self._create_summary_sheet(flows_df, capacity_df, generation_df, utilization_df)
+                # Sheet 5: Kosten-Zusammenfassung
+                cost_summary = cost_analysis['cost_summary']
+                summary_data = [
+                    ['Gesamtkosten', f"{cost_summary['total_costs']:.2f}", cost_summary['currency_unit']],
+                    ['Investment-Kosten', f"{cost_summary['investment_costs']:.2f}", cost_summary['currency_unit']],
+                    ['Variable Kosten', f"{cost_summary['variable_costs']:.2f}", cost_summary['currency_unit']],
+                    ['Investment-Anteil', f"{cost_summary['investment_share']:.1%}", ''],
+                    ['Variable-Anteil', f"{cost_summary['variable_share']:.1%}", ''],
+                    ['Ø Stündliche Kosten', f"{cost_summary['avg_hourly_costs']:.2f}", cost_summary['currency_unit']],
+                    ['Max Stündliche Kosten', f"{cost_summary['max_hourly_costs']:.2f}", cost_summary['currency_unit']]
+                ]
+                
+                cost_summary_df = pd.DataFrame(summary_data, columns=['Kategorie', 'Wert', 'Einheit'])
+                cost_summary_df.to_excel(writer, sheet_name='Cost_Summary', index=False)
+                
+                # Sheet 6: Investment-Kosten (falls vorhanden)
+                investment_costs = cost_analysis['investment_costs']
+                if not investment_costs.empty:
+                    investment_costs.to_excel(writer, sheet_name='Investment_Costs', index=False)
+                
+                # Sheet 7: Variable Kosten (falls vorhanden)
+                variable_costs = cost_analysis['variable_costs']
+                if not variable_costs.empty:
+                    variable_costs.to_excel(writer, sheet_name='Variable_Costs', index=False)
+                
+                # Sheet 8: Stündliche Kosten (falls vorhanden)
+                hourly_costs = cost_analysis['hourly_costs']
+                if not hourly_costs.empty:
+                    hourly_costs.to_excel(writer, sheet_name='Hourly_Costs')
+                
+                # Sheet 9: Technologie-Kosten (falls vorhanden)
+                tech_costs = cost_analysis['technology_costs']
+                if tech_costs:
+                    tech_df = pd.DataFrame(tech_costs).T
+                    tech_df.to_excel(writer, sheet_name='Technology_Costs')
+                
+                # Sheet 10: Vollbenutzungsstunden-Kosten (falls vorhanden)
+                utilization_costs = cost_analysis['utilization_costs']
+                if not utilization_costs.empty:
+                    utilization_costs.to_excel(writer, sheet_name='Utilization_Costs', index=False)
+                
+                # Sheet 11: Allgemeine Zusammenfassung
+                summary_data = self._create_summary_sheet(flows_df, capacity_df, generation_df, utilization_df, cost_analysis)
                 summary_df = pd.DataFrame(summary_data)
                 summary_df.to_excel(writer, sheet_name='Summary', index=False)
             
@@ -367,9 +534,10 @@ class ResultsProcessor:
     def _create_summary_sheet(self, flows_df: pd.DataFrame, 
                             capacity_df: pd.DataFrame,
                             generation_df: pd.DataFrame,
-                            utilization_df: pd.DataFrame) -> List[Dict[str, Any]]:
+                            utilization_df: pd.DataFrame,
+                            cost_analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Erstellt eine Zusammenfassung der wichtigsten Kennzahlen.
+        Erstellt eine Zusammenfassung der wichtigsten Kennzahlen inkl. Kosten.
         
         Returns:
             Liste mit Zusammenfassungsdaten
@@ -403,6 +571,14 @@ class ResultsProcessor:
             summary_data.append({'Kategorie': 'Vollbenutzung', 'Parameter': 'Durchschnittliche VBH (h)', 'Wert': round(avg_utilization, 1)})
             summary_data.append({'Kategorie': 'Vollbenutzung', 'Parameter': 'Maximale VBH (h)', 'Wert': round(max_utilization, 1)})
         
+        # Kosten-Statistiken
+        cost_summary = cost_analysis['cost_summary']
+        summary_data.append({'Kategorie': 'Kosten', 'Parameter': f'Gesamtkosten ({cost_summary["currency_unit"]})', 'Wert': round(cost_summary['total_costs'], 2)})
+        summary_data.append({'Kategorie': 'Kosten', 'Parameter': f'Investment-Kosten ({cost_summary["currency_unit"]})', 'Wert': round(cost_summary['investment_costs'], 2)})
+        summary_data.append({'Kategorie': 'Kosten', 'Parameter': f'Variable Kosten ({cost_summary["currency_unit"]})', 'Wert': round(cost_summary['variable_costs'], 2)})
+        summary_data.append({'Kategorie': 'Kosten', 'Parameter': 'Investment-Anteil (%)', 'Wert': round(cost_summary['investment_share'] * 100, 1)})
+        summary_data.append({'Kategorie': 'Kosten', 'Parameter': 'Variable-Anteil (%)', 'Wert': round(cost_summary['variable_share'] * 100, 1)})
+        
         return summary_data
 
 
@@ -411,7 +587,7 @@ def test_results_processor():
     import tempfile
     import numpy as np
     
-    print("🧪 Teste Results Processor...")
+    print("🧪 Teste Results Processor mit Kosten-Analyse...")
     
     # Dummy-Daten erstellen
     timestamps = pd.date_range('2025-01-01', periods=24, freq='h')
@@ -441,6 +617,19 @@ def test_results_processor():
     }
     
     # Dummy Energy System
+    class DummyInvestment:
+        def __init__(self, ep_costs=100):
+            self.ep_costs = ep_costs
+            self.existing = 0
+            self.maximum = 1000
+            self.minimum = 0
+    
+    class DummyFlow:
+        def __init__(self, has_investment=False, variable_costs=0):
+            if has_investment:
+                self.investment = DummyInvestment()
+            self.variable_costs = variable_costs
+    
     class DummyNode:
         def __init__(self, label):
             self.label = label
@@ -457,6 +646,11 @@ def test_results_processor():
                 DummyNode('el_bus'),
                 DummyNode('demand')
             ]
+            
+            # Flows hinzufügen
+            self.nodes[0].outputs[self.nodes[2]] = DummyFlow(has_investment=True, variable_costs=0.0)
+            self.nodes[1].outputs[self.nodes[2]] = DummyFlow(has_investment=True, variable_costs=0.0)
+            self.nodes[2].outputs[self.nodes[3]] = DummyFlow(variable_costs=0.25)
     
     # Test durchführen
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -471,6 +665,7 @@ def test_results_processor():
             print(f"   🔋 Kapazitäten: {len(results['capacities'])} Einträge")
             print(f"   ⚡ Erzeugung: {len(results['generation'])} Einträge")
             print(f"   ⏱️ Vollbenutzung: {len(results['utilization'])} Einträge")
+            print(f"   💰 Kosten-Analyse: {results['cost_analysis']['cost_summary']['total_costs']:.2f} €")
             print(f"   📄 Excel-Datei: {results['excel_file'].name}")
             
         except Exception as e:

@@ -35,6 +35,40 @@ class Analyzer:
         
         # Analyse-Ergebnisse
         self.analysis_results = {}
+        self.output_files = []
+    
+    def create_analysis(self, results: Dict[str, Any], energy_system: Any,
+                       excel_data: Dict[str, Any]) -> List[Path]:
+        """
+        Führt alle verfügbaren Analysen durch und erstellt Dateien.
+        
+        Args:
+            results: Optimierungsergebnisse
+            energy_system: EnergySystem
+            excel_data: Original Excel-Daten
+            
+        Returns:
+            Liste der erstellten Analyse-Dateien
+        """
+        self.logger.info("🔍 Führe vertiefende Analysen durch...")
+        
+        try:
+            # Hauptanalyse durchführen
+            analysis_results = self.perform_analysis(results, energy_system, excel_data)
+            
+            # Ergebnisse speichern
+            self._save_analysis_results()
+            
+            self.logger.info(f"✅ {len(self.analysis_results)} Analysen abgeschlossen")
+            
+            return self.output_files
+            
+        except Exception as e:
+            self.logger.error(f"❌ Fehler bei der Analyse: {e}")
+            if self.settings.get('debug_mode', False):
+                import traceback
+                traceback.print_exc()
+            return []
     
     def perform_analysis(self, results: Dict[str, Any], energy_system: Any,
                         excel_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -49,37 +83,36 @@ class Analyzer:
         Returns:
             Dictionary mit Analyse-Ergebnissen
         """
-        self.logger.info("🔍 Führe vertiefende Analysen durch...")
-        
         # KPI-Analyse
+        self.logger.info("   📊 Berechne KPIs...")
         kpis = self._calculate_kpis(results, energy_system, excel_data)
         self.analysis_results['kpis'] = kpis
         
         # Autarkie-Analyse
+        self.logger.info("   🏠 Analysiere Autarkie...")
         autarky = self._analyze_autarky(results)
         self.analysis_results['autarky'] = autarky
         
         # Lastdeckungs-Analyse
+        self.logger.info("   ⚡ Analysiere Lastdeckung...")
         load_coverage = self._analyze_load_coverage(results)
         self.analysis_results['load_coverage'] = load_coverage
         
         # Auslastungs-Analyse
+        self.logger.info("   📈 Analysiere Auslastung...")
         utilization = self._analyze_utilization(results)
         self.analysis_results['utilization'] = utilization
         
-        # Emissions-Analyse (falls Daten verfügbar)
-        if self._has_emission_data(excel_data):
-            emissions = self._analyze_emissions(results, excel_data)
-            self.analysis_results['emissions'] = emissions
-        
         # Wirtschaftlichkeits-Analyse
+        self.logger.info("   💰 Analysiere Wirtschaftlichkeit...")
         economics = self._analyze_economics(results)
         self.analysis_results['economics'] = economics
         
-        # Ergebnisse speichern
-        self._save_analysis_results()
-        
-        self.logger.info(f"✅ {len(self.analysis_results)} Analysen abgeschlossen")
+        # Emissions-Analyse (falls Daten verfügbar)
+        if self._has_emission_data(excel_data):
+            self.logger.info("   🌱 Analysiere Emissionen...")
+            emissions = self._analyze_emissions(results, excel_data)
+            self.analysis_results['emissions'] = emissions
         
         return self.analysis_results
     
@@ -89,317 +122,248 @@ class Analyzer:
         kpis = {}
         
         try:
-            # Gesamtenergie-Flows
-            total_energy = 0
-            peak_power = 0
-            
-            for (source, target), flow_results in results.items():
-                if 'sequences' in flow_results and 'flow' in flow_results['sequences']:
-                    flow_values = flow_results['sequences']['flow']
-                    total_energy += flow_values.sum()
-                    peak_power = max(peak_power, flow_values.max())
-            
-            kpis['total_energy_kwh'] = total_energy
-            kpis['peak_power_kw'] = peak_power
-            
-            # Zeitbasierte KPIs
-            if hasattr(energy_system, 'timeindex'):
-                simulation_hours = len(energy_system.timeindex)
-                kpis['simulation_duration_h'] = simulation_hours
-                
-                if simulation_hours > 0:
-                    kpis['average_power_kw'] = total_energy / simulation_hours
-                    kpis['load_factor'] = (total_energy / simulation_hours) / peak_power if peak_power > 0 else 0
-            
-            # Renewable Energy Share (vereinfacht)
-            renewable_energy = 0
+            # Grundlegende Energie-KPIs
             total_generation = 0
+            total_demand = 0
+            renewable_generation = 0
             
             for (source, target), flow_results in results.items():
                 if 'sequences' in flow_results and 'flow' in flow_results['sequences']:
-                    flow_values = flow_results['sequences']['flow']
-                    energy = flow_values.sum()
+                    flow_sum = flow_results['sequences']['flow'].sum()
                     
-                    # Vereinfachte Erkennung erneuerbarer Quellen
-                    if any(keyword in str(source).lower() for keyword in ['pv', 'wind', 'solar', 'hydro']):
-                        renewable_energy += energy
+                    # Gesamterzeugung
+                    if self._is_generator(str(source)):
+                        total_generation += flow_sum
+                        
+                        # Erneuerbare Erzeugung
+                        if self._is_renewable(str(source)):
+                            renewable_generation += flow_sum
                     
-                    # Nur Generatoren zählen (nicht interne Flows)
-                    if 'bus' in str(target).lower():
-                        total_generation += energy
+                    # Gesamtnachfrage
+                    if self._is_demand(str(target)):
+                        total_demand += flow_sum
             
-            if total_generation > 0:
-                kpis['renewable_share'] = renewable_energy / total_generation
-            else:
-                kpis['renewable_share'] = 0
+            # KPIs berechnen
+            kpis['total_generation_MWh'] = round(total_generation, 2)
+            kpis['total_demand_MWh'] = round(total_demand, 2)
+            kpis['renewable_generation_MWh'] = round(renewable_generation, 2)
+            kpis['renewable_share'] = round(renewable_generation / total_generation if total_generation > 0 else 0, 3)
+            kpis['supply_demand_balance'] = round(total_generation / total_demand if total_demand > 0 else 0, 3)
             
-            # Anzahl aktiver Zeitstunden
-            active_hours = 0
-            for (source, target), flow_results in results.items():
-                if 'sequences' in flow_results and 'flow' in flow_results['sequences']:
-                    flow_values = flow_results['sequences']['flow']
-                    active_hours = max(active_hours, (flow_values > 0).sum())
-            
-            kpis['active_hours'] = active_hours
-            
+            # Zeitbereich-KPIs
+            if hasattr(energy_system, 'timeindex'):
+                kpis['simulation_hours'] = len(energy_system.timeindex)
+                kpis['avg_generation_MW'] = round(total_generation / len(energy_system.timeindex) if len(energy_system.timeindex) > 0 else 0, 2)
+                kpis['avg_demand_MW'] = round(total_demand / len(energy_system.timeindex) if len(energy_system.timeindex) > 0 else 0, 2)
+        
         except Exception as e:
-            self.logger.warning(f"KPI-Berechnung fehlgeschlagen: {e}")
+            self.logger.warning(f"Fehler bei KPI-Berechnung: {e}")
         
         return kpis
     
     def _analyze_autarky(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """Analysiert den Autarkiegrad des Systems."""
+        """Analysiert den Autarkiegrad."""
         autarky = {}
         
         try:
-            # Grid-Import und Export identifizieren
             grid_import = 0
-            grid_export = 0
             total_demand = 0
             
             for (source, target), flow_results in results.items():
                 if 'sequences' in flow_results and 'flow' in flow_results['sequences']:
-                    flow_values = flow_results['sequences']['flow']
-                    energy = flow_values.sum()
+                    flow_sum = flow_results['sequences']['flow'].sum()
                     
-                    # Grid-Flows identifizieren
+                    # Grid-Import
                     if 'grid' in str(source).lower() and 'import' in str(source).lower():
-                        grid_import += energy
-                    elif 'grid' in str(target).lower() and 'export' in str(target).lower():
-                        grid_export += energy
+                        grid_import += flow_sum
                     
-                    # Demand identifizieren
-                    if any(keyword in str(target).lower() for keyword in ['load', 'demand', 'sink']):
-                        if 'grid' not in str(target).lower():
-                            total_demand += energy
+                    # Gesamtnachfrage
+                    if self._is_demand(str(target)):
+                        total_demand += flow_sum
             
             # Autarkiegrad berechnen
-            if total_demand > 0:
-                autarky['autarky_rate'] = max(0, (total_demand - grid_import) / total_demand)
-            else:
-                autarky['autarky_rate'] = 0
+            autarky_degree = 1 - (grid_import / total_demand) if total_demand > 0 else 0
             
-            # Eigenverbrauchsrate
-            own_generation = total_demand + grid_export - grid_import
-            if own_generation > 0:
-                autarky['self_consumption_rate'] = (total_demand - grid_import) / own_generation
-            else:
-                autarky['self_consumption_rate'] = 0
-            
-            autarky['grid_import_kwh'] = grid_import
-            autarky['grid_export_kwh'] = grid_export
-            autarky['total_demand_kwh'] = total_demand
-            
+            autarky['grid_import_MWh'] = round(grid_import, 2)
+            autarky['total_demand_MWh'] = round(total_demand, 2)
+            autarky['autarky_degree'] = round(autarky_degree, 3)
+            autarky['grid_dependency'] = round(grid_import / total_demand if total_demand > 0 else 0, 3)
+        
         except Exception as e:
-            self.logger.warning(f"Autarkie-Analyse fehlgeschlagen: {e}")
+            self.logger.warning(f"Fehler bei Autarkie-Analyse: {e}")
         
         return autarky
     
     def _analyze_load_coverage(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """Analysiert die Lastdeckung durch verschiedene Quellen."""
+        """Analysiert die Lastdeckung."""
         load_coverage = {}
         
         try:
-            # Alle Flows zu Lasten sammeln
-            load_flows = {}
+            # Sammle alle Erzeugung und Last-Zeitreihen
+            generation_series = []
+            demand_series = []
             
             for (source, target), flow_results in results.items():
                 if 'sequences' in flow_results and 'flow' in flow_results['sequences']:
-                    # Load/Demand/Sink als Ziel identifizieren
-                    if any(keyword in str(target).lower() for keyword in ['load', 'demand', 'sink']):
-                        if 'grid' not in str(target).lower():  # Grid-Export ausschließen
-                            flow_values = flow_results['sequences']['flow']
-                            load_flows[str(source)] = flow_values.sum()
+                    flow_series = flow_results['sequences']['flow']
+                    
+                    if self._is_generator(str(source)):
+                        generation_series.append(flow_series)
+                    
+                    if self._is_demand(str(target)):
+                        demand_series.append(flow_series)
             
-            if load_flows:
-                total_load = sum(load_flows.values())
+            if generation_series and demand_series:
+                # Summiere alle Zeitreihen
+                total_generation = sum(generation_series)
+                total_demand = sum(demand_series)
                 
-                # Prozentuale Anteile berechnen
-                load_shares = {}
-                for source, energy in load_flows.items():
-                    share = (energy / total_load) if total_load > 0 else 0
-                    load_shares[source] = {
-                        'energy_kwh': energy,
-                        'share_percent': share * 100
-                    }
+                # Lastdeckungsstatistiken
+                coverage_ratio = total_generation / total_demand
                 
-                load_coverage['total_load_kwh'] = total_load
-                load_coverage['source_shares'] = load_shares
+                load_coverage['min_coverage'] = round(coverage_ratio.min(), 3)
+                load_coverage['max_coverage'] = round(coverage_ratio.max(), 3)
+                load_coverage['avg_coverage'] = round(coverage_ratio.mean(), 3)
+                load_coverage['std_coverage'] = round(coverage_ratio.std(), 3)
                 
-                # Top-3 Quellen
-                sorted_sources = sorted(load_shares.items(), 
-                                      key=lambda x: x[1]['energy_kwh'], 
-                                      reverse=True)
-                load_coverage['top_sources'] = dict(sorted_sources[:3])
-            
+                # Zeiten mit Über-/Unterdeckung
+                overproduction_hours = (coverage_ratio > 1.05).sum()
+                underproduction_hours = (coverage_ratio < 0.95).sum()
+                
+                load_coverage['overproduction_hours'] = int(overproduction_hours)
+                load_coverage['underproduction_hours'] = int(underproduction_hours)
+                load_coverage['balanced_hours'] = len(coverage_ratio) - overproduction_hours - underproduction_hours
+        
         except Exception as e:
-            self.logger.warning(f"Lastdeckungs-Analyse fehlgeschlagen: {e}")
+            self.logger.warning(f"Fehler bei Lastdeckungs-Analyse: {e}")
         
         return load_coverage
     
-    def _analyze_utilization(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """Analysiert die Auslastung von Komponenten."""
+    def _analyze_utilization(self, results: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
+        """Analysiert die Anlagenauslastung."""
         utilization = {}
         
         try:
-            component_utilization = {}
-            
             for (source, target), flow_results in results.items():
                 if 'sequences' in flow_results and 'flow' in flow_results['sequences']:
-                    flow_values = flow_results['sequences']['flow']
+                    flow_series = flow_results['sequences']['flow']
+                    source_name = str(source)
                     
-                    if len(flow_values) > 0:
-                        max_flow = flow_values.max()
-                        avg_flow = flow_values.mean()
+                    if self._is_generator(source_name):
+                        # Auslastungsstatistiken
+                        max_flow = flow_series.max()
+                        avg_flow = flow_series.mean()
+                        operating_hours = (flow_series > 0).sum()
+                        total_hours = len(flow_series)
                         
-                        # Auslastung berechnen
-                        if max_flow > 0:
-                            avg_utilization = avg_flow / max_flow
-                            
-                            # Volllaststunden
-                            full_load_hours = flow_values.sum() / max_flow if max_flow > 0 else 0
-                            
-                            component_utilization[f"{source} → {target}"] = {
-                                'max_flow_kw': max_flow,
-                                'avg_flow_kw': avg_flow,
-                                'avg_utilization': avg_utilization,
-                                'full_load_hours': full_load_hours,
-                                'operating_hours': (flow_values > 0).sum()
-                            }
-            
-            # Nach Auslastung sortieren
-            sorted_utilization = dict(sorted(component_utilization.items(),
-                                           key=lambda x: x[1]['avg_utilization'],
-                                           reverse=True))
-            
-            utilization['component_utilization'] = sorted_utilization
-            
-            # Durchschnittliche Systemauslastung
-            if component_utilization:
-                avg_system_utilization = np.mean([
-                    comp['avg_utilization'] for comp in component_utilization.values()
-                ])
-                utilization['average_system_utilization'] = avg_system_utilization
-            
+                        utilization[source_name] = {
+                            'max_output_MW': round(max_flow, 2),
+                            'avg_output_MW': round(avg_flow, 2),
+                            'capacity_factor': round(avg_flow / max_flow if max_flow > 0 else 0, 3),
+                            'operating_hours': int(operating_hours),
+                            'total_hours': int(total_hours),
+                            'availability': round(operating_hours / total_hours if total_hours > 0 else 0, 3)
+                        }
+        
         except Exception as e:
-            self.logger.warning(f"Auslastungs-Analyse fehlgeschlagen: {e}")
+            self.logger.warning(f"Fehler bei Auslastungs-Analyse: {e}")
         
         return utilization
     
-    def _has_emission_data(self, excel_data: Dict[str, Any]) -> bool:
-        """Prüft ob Emissionsdaten verfügbar sind."""
-        # Vereinfachte Prüfung auf Emissions-Spalten
-        for sheet_name, df in excel_data.items():
-            if isinstance(df, pd.DataFrame):
-                if any('emission' in str(col).lower() for col in df.columns):
-                    return True
-        return False
-    
-    def _analyze_emissions(self, results: Dict[str, Any], excel_data: Dict[str, Any]) -> Dict[str, float]:
-        """Analysiert CO2-Emissionen (vereinfacht)."""
-        emissions = {}
-        
-        try:
-            # Standard-Emissionsfaktoren (kg CO2/kWh)
-            emission_factors = {
-                'grid': 0.4,      # Netz-Strommix
-                'gas': 0.2,       # Erdgas
-                'coal': 0.8,      # Kohle
-                'oil': 0.7,       # Öl
-                'pv': 0.05,       # PV (Lifecycle)
-                'wind': 0.02,     # Wind (Lifecycle)
-                'hydro': 0.01     # Wasserkraft
-            }
-            
-            total_emissions = 0
-            source_emissions = {}
-            
-            for (source, target), flow_results in results.items():
-                if 'sequences' in flow_results and 'flow' in flow_results['sequences']:
-                    flow_values = flow_results['sequences']['flow']
-                    energy = flow_values.sum()
-                    
-                    # Emissionsfaktor bestimmen
-                    emission_factor = 0
-                    source_str = str(source).lower()
-                    
-                    for fuel_type, factor in emission_factors.items():
-                        if fuel_type in source_str:
-                            emission_factor = factor
-                            break
-                    
-                    # Emissionen berechnen
-                    component_emissions = energy * emission_factor
-                    total_emissions += component_emissions
-                    
-                    if component_emissions > 0:
-                        source_emissions[str(source)] = {
-                            'energy_kwh': energy,
-                            'emission_factor_kg_per_kwh': emission_factor,
-                            'emissions_kg_co2': component_emissions
-                        }
-            
-            emissions['total_emissions_kg_co2'] = total_emissions
-            emissions['source_emissions'] = source_emissions
-            
-            # Spezifische Emissionen
-            total_energy = sum([data['energy_kwh'] for data in source_emissions.values()])
-            if total_energy > 0:
-                emissions['specific_emissions_kg_co2_per_kwh'] = total_emissions / total_energy
-            
-        except Exception as e:
-            self.logger.warning(f"Emissions-Analyse fehlgeschlagen: {e}")
-        
-        return emissions
-    
-    def _analyze_economics(self, results: Dict[str, Any]) -> Dict[str, Any]:
+    def _analyze_economics(self, results: Dict[str, Any]) -> Dict[str, float]:
         """Analysiert wirtschaftliche Kennzahlen."""
         economics = {}
         
         try:
-            total_costs = 0
-            cost_breakdown = {}
+            # Vereinfachte Wirtschaftlichkeitsanalyse
+            total_energy = 0
+            estimated_costs = 0
             
             for (source, target), flow_results in results.items():
-                if 'scalars' in flow_results:
-                    scalars = flow_results['scalars']
+                if 'sequences' in flow_results and 'flow' in flow_results['sequences']:
+                    flow_sum = flow_results['sequences']['flow'].sum()
+                    total_energy += flow_sum
                     
-                    # Variable Kosten
-                    var_costs = scalars.get('variable_costs', 0)
-                    if var_costs > 0 and 'sequences' in flow_results:
-                        if 'flow' in flow_results['sequences']:
-                            total_flow = flow_results['sequences']['flow'].sum()
-                            total_var_costs = var_costs * total_flow
-                            
-                            cost_breakdown[f"{source}_variable"] = total_var_costs
-                            total_costs += total_var_costs
-                    
-                    # Investment-Kosten
-                    inv_costs = scalars.get('investment_costs', 0)
-                    if inv_costs > 0:
-                        cost_breakdown[f"{source}_investment"] = inv_costs
-                        total_costs += inv_costs
+                    # Vereinfachte Kostenschätzung basierend auf Technologie
+                    source_name = str(source).lower()
+                    if 'pv' in source_name or 'solar' in source_name:
+                        estimated_costs += flow_sum * 50  # €/MWh
+                    elif 'wind' in source_name:
+                        estimated_costs += flow_sum * 60  # €/MWh
+                    elif 'grid' in source_name:
+                        estimated_costs += flow_sum * 250  # €/MWh
+                    else:
+                        estimated_costs += flow_sum * 100  # €/MWh Default
             
-            economics['total_costs_euro'] = total_costs
-            economics['cost_breakdown'] = cost_breakdown
+            # LCOE (vereinfacht)
+            lcoe = estimated_costs / total_energy if total_energy > 0 else 0
             
-            # Kosten pro kWh (vereinfacht)
-            total_energy = sum([
-                flow_results['sequences']['flow'].sum()
-                for flow_results in results.values()
-                if 'sequences' in flow_results and 'flow' in flow_results['sequences']
-            ])
-            
-            if total_energy > 0:
-                economics['lcoe_euro_per_kwh'] = total_costs / total_energy
+            economics['total_energy_MWh'] = round(total_energy, 2)
+            economics['estimated_total_costs_EUR'] = round(estimated_costs, 2)
+            economics['estimated_LCOE_EUR_per_MWh'] = round(lcoe, 2)
             
         except Exception as e:
-            self.logger.warning(f"Wirtschaftlichkeits-Analyse fehlgeschlagen: {e}")
+            self.logger.warning(f"Fehler bei Wirtschaftlichkeits-Analyse: {e}")
         
         return economics
     
+    def _analyze_emissions(self, results: Dict[str, Any], excel_data: Dict[str, Any]) -> Dict[str, float]:
+        """Analysiert CO2-Emissionen (falls Daten verfügbar)."""
+        emissions = {}
+        
+        try:
+            # Vereinfachte Emissions-Analyse
+            total_emissions = 0
+            total_energy = 0
+            
+            for (source, target), flow_results in results.items():
+                if 'sequences' in flow_results and 'flow' in flow_results['sequences']:
+                    flow_sum = flow_results['sequences']['flow'].sum()
+                    total_energy += flow_sum
+                    
+                    # Vereinfachte Emissionsfaktoren (kg CO2/MWh)
+                    source_name = str(source).lower()
+                    if 'pv' in source_name or 'solar' in source_name:
+                        total_emissions += flow_sum * 50  # kg CO2/MWh
+                    elif 'wind' in source_name:
+                        total_emissions += flow_sum * 30  # kg CO2/MWh
+                    elif 'grid' in source_name:
+                        total_emissions += flow_sum * 500  # kg CO2/MWh
+                    elif 'gas' in source_name:
+                        total_emissions += flow_sum * 400  # kg CO2/MWh
+            
+            emissions['total_emissions_kg_CO2'] = round(total_emissions, 2)
+            emissions['total_energy_MWh'] = round(total_energy, 2)
+            emissions['emission_factor_kg_CO2_per_MWh'] = round(total_emissions / total_energy if total_energy > 0 else 0, 2)
+            emissions['total_emissions_t_CO2'] = round(total_emissions / 1000, 2)
+        
+        except Exception as e:
+            self.logger.warning(f"Fehler bei Emissions-Analyse: {e}")
+        
+        return emissions
+    
+    def _has_emission_data(self, excel_data: Dict[str, Any]) -> bool:
+        """Prüft ob Emissions-Daten verfügbar sind."""
+        # Vereinfacht: Immer aktiviert für Demo
+        return True
+    
+    def _is_generator(self, component_name: str) -> bool:
+        """Prüft ob Komponente ein Erzeuger ist."""
+        generator_terms = ['plant', 'generator', 'pv', 'wind', 'solar', 'turbine', 'source']
+        return any(term in component_name.lower() for term in generator_terms)
+    
+    def _is_renewable(self, component_name: str) -> bool:
+        """Prüft ob Komponente erneuerbar ist."""
+        renewable_terms = ['pv', 'solar', 'wind', 'hydro', 'bio', 'geothermal']
+        return any(term in component_name.lower() for term in renewable_terms)
+    
+    def _is_demand(self, component_name: str) -> bool:
+        """Prüft ob Komponente eine Last ist."""
+        demand_terms = ['demand', 'load', 'consumption', 'sink']
+        return any(term in component_name.lower() for term in demand_terms)
+    
     def _save_analysis_results(self):
-        """Speichert alle Analyse-Ergebnisse."""
+        """Speichert die Analyse-Ergebnisse."""
         try:
             # JSON-Export
             import json
@@ -407,6 +371,8 @@ class Analyzer:
             json_file = self.output_dir / "analysis_results.json"
             with open(json_file, 'w', encoding='utf-8') as f:
                 json.dump(self.analysis_results, f, indent=2, default=str)
+            
+            self.output_files.append(json_file)
             
             # Excel-Export (wenn möglich)
             try:
@@ -421,6 +387,7 @@ class Analyzer:
                                             columns=['Parameter', 'Wert'])
                             df.to_excel(writer, sheet_name=analysis_type[:30], index=False)
                 
+                self.output_files.append(excel_file)
                 self.logger.debug(f"      💾 {excel_file.name}")
                 
             except Exception:
@@ -443,6 +410,7 @@ class Analyzer:
                     
                     f.write("\n")
             
+            self.output_files.append(report_file)
             self.logger.debug(f"      💾 {json_file.name}, {report_file.name}")
             
         except Exception as e:
@@ -469,7 +437,6 @@ class Analyzer:
                 f.write("  " * indent + f"{key}: {value}\n")
 
 
-# Test-Funktion
 def test_analyzer():
     """Testfunktion für den Analyzer."""
     import tempfile
@@ -508,12 +475,15 @@ def test_analyzer():
         analyzer = Analyzer(Path(temp_dir), settings)
         
         try:
-            results = analyzer.perform_analysis(dummy_results, energy_system, excel_data)
+            analysis_files = analyzer.create_analysis(dummy_results, energy_system, excel_data)
             print("✅ Analyzer Test erfolgreich!")
-            print(f"Durchgeführte Analysen: {list(results.keys())}")
+            print(f"Durchgeführte Analysen: {list(analyzer.analysis_results.keys())}")
+            print(f"Erstellte Dateien: {len(analysis_files)}")
             
         except Exception as e:
             print(f"❌ Test fehlgeschlagen: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 if __name__ == "__main__":
