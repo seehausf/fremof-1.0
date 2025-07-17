@@ -7,9 +7,11 @@ Zentrale Koordination der Energiesystemoptimierung mit modularer Architektur.
 Orchestriert den Datenfluss zwischen Excel-Import, Systemaufbau, Optimierung
 und Ergebnisverarbeitung.
 
+Erweitert um optionalen System-Export nach dem System-Builder.
+
 Autor: [Ihr Name]
 Datum: Juli 2025
-Version: 1.0.0
+Version: 1.1.0 (mit System Export)
 """
 
 import sys
@@ -65,23 +67,50 @@ class EnergySystemProject:
     
     def setup_logging(self):
         """Konfiguriert das Logging-System."""
-        log_level = logging.DEBUG if self.config['settings']['debug_mode'] else logging.INFO
+        # FIX: oemof.solph 0.6.0 Logging-Konflikt vermeiden
+        # Root-Logger NIEMALS auf DEBUG setzen wegen Pyomo-Performance-Problem
         
-        # Logger konfigurieren
+        if self.config['settings']['debug_mode']:
+            # Debug-Modus: Nur unsere Module auf DEBUG, Root-Logger auf INFO
+            root_log_level = logging.INFO
+            project_log_level = logging.DEBUG
+            self.logger_note = "Debug-Modus (nur Projekt-Module)"
+        else:
+            root_log_level = logging.INFO
+            project_log_level = logging.INFO
+            self.logger_note = "Standard-Modus"
+        
+        # Root-Logger auf INFO setzen (oemof.solph Requirement)
+        logging.getLogger().setLevel(root_log_level)
+        
+        # Logging-Handler konfigurieren
         logging.basicConfig(
-            level=log_level,
+            level=root_log_level,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             handlers=[
                 logging.FileHandler(self.output_dir / f"{self.project_name}.log"),
                 logging.StreamHandler(sys.stdout)
-            ]
+            ],
+            force=True  # Bestehende Handler überschreiben
         )
         
+        # Projekt-Logger erstellen
         self.logger = logging.getLogger(__name__)
-        self.logger.info(f"🚀 Starte Projekt: {self.project_name}")
+        self.logger.setLevel(project_log_level)
+        
+        # Modul-Logger auf gewünschtes Level setzen
+        if self.config['settings']['debug_mode']:
+            logging.getLogger('modules').setLevel(logging.DEBUG)
+            for module_name in ['excel_reader', 'system_builder', 'optimizer', 
+                              'results_processor', 'visualizer', 'analyzer']:
+                logging.getLogger(f'modules.{module_name}').setLevel(logging.DEBUG)
+        
+        self.logger.info(f"🚀 Starte Projekt: {self.project_name} ({self.logger_note})")
     
     def initialize_modules(self):
         """Initialisiert alle verfügbaren Module."""
+        self.logger.info("🔧 Initialisiere Module...")
+        
         self.modules = {}
         
         # Excel Reader (immer erforderlich)
@@ -89,6 +118,16 @@ class EnergySystemProject:
         
         # System Builder (immer erforderlich)
         self.modules['system_builder'] = SystemBuilder(self.config['settings'])
+        
+        # Energy System Exporter (optional) - NEU
+        if self.config['modules'].get('system_exporter', False):
+            try:
+                from modules.energy_system_exporter import create_export_module
+                self.modules['system_exporter'] = create_export_module(self.config['settings'])
+                self.logger.info("   📤 System-Exporter aktiviert")
+            except ImportError as e:
+                self.logger.warning(f"System-Exporter konnte nicht geladen werden: {e}")
+                self.config['modules']['system_exporter'] = False
         
         # Optimizer (immer erforderlich)
         self.modules['optimizer'] = Optimizer(self.config['settings'])
@@ -175,6 +214,48 @@ class EnergySystemProject:
             
         except Exception as e:
             self.logger.error(f"❌ Fehler beim Aufbau des Energiesystems: {e}")
+            if self.config['settings']['debug_mode']:
+                import traceback
+                traceback.print_exc()
+            return False
+    
+    def step_2_5_export_system(self) -> bool:
+        """Schritt 2.5: Energiesystem exportieren (optional) - NEU."""
+        if not self.config['modules'].get('system_exporter', False):
+            self.logger.info("⏭️  Schritt 2.5: System-Export übersprungen (deaktiviert)")
+            return True
+        
+        self.logger.info("📤 Schritt 2.5: Energiesystem exportieren")
+        
+        try:
+            start_time = time.time()
+            
+            # Export-Verzeichnis erstellen
+            export_dir = self.output_dir / "system_exports"
+            
+            # Export-Formate aus Konfiguration lesen
+            export_formats = self.config['settings'].get('export_formats', ['json', 'yaml', 'txt'])
+            
+            # Export durchführen
+            export_files = self.modules['system_exporter'].export_system(
+                energy_system=self.energy_system,
+                excel_data=self.excel_data,
+                output_dir=export_dir,
+                formats=export_formats
+            )
+            
+            elapsed_time = time.time() - start_time
+            self.logger.info(f"✅ System-Export erfolgreich abgeschlossen ({elapsed_time:.2f}s)")
+            
+            # Exportierte Dateien auflisten
+            self.logger.info(f"   📄 {len(export_files)} Export-Dateien erstellt:")
+            for fmt, filepath in export_files.items():
+                self.logger.info(f"      • {fmt.upper()}: {filepath.name}")
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Fehler beim System-Export: {e}")
             if self.config['settings']['debug_mode']:
                 import traceback
                 traceback.print_exc()
@@ -290,16 +371,19 @@ class EnergySystemProject:
             start_time = time.time()
             
             # Analysen durchführen
-            analysis_results = self.modules['analyzer'].perform_analysis(
+            analysis_files = self.modules['analyzer'].create_analysis(
                 self.results, self.energy_system, self.excel_data
             )
             
             elapsed_time = time.time() - start_time
-            self.logger.info(f"✅ Analysen erfolgreich durchgeführt ({elapsed_time:.2f}s)")
+            self.logger.info(f"✅ Analysen erfolgreich abgeschlossen ({elapsed_time:.2f}s)")
             
-            # Analyse-Zusammenfassung
-            for analysis_type, result in analysis_results.items():
-                self.logger.info(f"   🔍 {analysis_type}: {result.get('summary', 'Abgeschlossen')}")
+            # Erstellte Analysen auflisten
+            self.logger.info(f"   🔍 {len(analysis_files)} Analyse-Dateien erstellt:")
+            for file in sorted(analysis_files)[:3]:  # Nur erste 3 anzeigen
+                self.logger.info(f"      • {file.name}")
+            if len(analysis_files) > 3:
+                self.logger.info(f"      ... und {len(analysis_files) - 3} weitere")
             
             return True
             
@@ -311,38 +395,48 @@ class EnergySystemProject:
             return False
     
     def save_project_summary(self):
-        """Speichert eine Projekt-Zusammenfassung."""
+        """Speichert eine Zusammenfassung des Projekts."""
         try:
-            summary_file = self.output_dir / f"{self.project_name}_summary.txt"
+            summary_file = self.output_dir / "project_summary.txt"
             
             with open(summary_file, 'w', encoding='utf-8') as f:
-                f.write(f"Energiesystem-Optimierung: {self.project_name}\n")
+                f.write(f"PROJEKT-ZUSAMMENFASSUNG: {self.project_name}\n")
                 f.write("=" * 60 + "\n\n")
-                f.write(f"Projektdatei: {self.project_file}\n")
-                f.write(f"Ausgabeverzeichnis: {self.output_dir}\n")
-                f.write(f"Solver: {self.config['settings']['solver']}\n")
-                f.write(f"Ausführungszeit: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
                 
-                # Modulstatus
-                f.write("Verwendete Module:\n")
-                for module, active in self.config['modules'].items():
-                    status = "✅" if active else "❌"
-                    f.write(f"  {status} {module}\n")
+                f.write(f"Eingabedatei: {self.project_file.name}\n")
+                f.write(f"Ausführungszeit: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Output-Verzeichnis: {self.output_dir}\n\n")
+                
+                # Konfiguration
+                f.write("KONFIGURATION:\n")
+                f.write("-" * 20 + "\n")
+                for key, value in self.config['settings'].items():
+                    f.write(f"{key}: {value}\n")
                 f.write("\n")
                 
-                # Dateien im Output-Verzeichnis
-                output_files = list(self.output_dir.glob("*"))
-                f.write(f"Erstellte Dateien ({len(output_files)}):\n")
-                for file in sorted(output_files):
-                    f.write(f"  • {file.name}\n")
+                # Module
+                f.write("AKTIVIERTE MODULE:\n")
+                f.write("-" * 20 + "\n")
+                for module, active in self.config['modules'].items():
+                    status = "✓" if active else "✗"
+                    f.write(f"{status} {module}\n")
+                f.write("\n")
+                
+                # Dateien
+                f.write("ERSTELLTE DATEIEN:\n")
+                f.write("-" * 20 + "\n")
+                output_files = list(self.output_dir.glob('**/*'))
+                for output_file in sorted(output_files):
+                    if output_file.name != summary_file.name:
+                        f.write(f"• {output_file.name}\n")
             
             self.logger.info(f"💾 Projekt-Zusammenfassung gespeichert: {summary_file.name}")
             
         except Exception as e:
-            self.logger.warning(f"⚠️  Fehler beim Speichern der Zusammenfassung: {e}")
+            self.logger.warning(f"Projekt-Zusammenfassung konnte nicht erstellt werden: {e}")
     
     def run(self) -> bool:
-        """Führt das komplette Projekt aus."""
+        """Führt das komplette Projekt durch."""
         self.logger.info("🎯 Starte Projektausführung")
         project_start_time = time.time()
         
@@ -356,6 +450,10 @@ class EnergySystemProject:
         
         # Schritt 2: Energiesystem aufbauen
         if not self.step_2_build_system():
+            return False
+        
+        # Schritt 2.5: System exportieren (optional) - NEU
+        if not self.step_2_5_export_system():
             return False
         
         # Schritt 3: Optimierung durchführen
@@ -427,14 +525,16 @@ if __name__ == "__main__":
                 'optimizer': True,
                 'results_processor': True,
                 'visualizer': False,
-                'analyzer': False
+                'analyzer': False,
+                'system_exporter': False  # NEU: Standardmäßig deaktiviert
             },
             'settings': {
                 'solver': 'cbc',
                 'output_format': 'xlsx',
                 'create_plots': False,
                 'save_model': False,
-                'debug_mode': True
+                'debug_mode': True,
+                'export_formats': ['json', 'yaml', 'txt']  # NEU: Export-Formate
             }
         }
         
