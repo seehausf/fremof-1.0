@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-oemof.solph 0.6.0 Energiesystem-Aufbau Modul
-===========================================
+oemof.solph 0.6.0 Energiesystem-Aufbau Modul - Multi-Input/Output Version
+========================================================================
 
-Baut oemof.solph Energiesysteme aus Excel-Daten auf.
-Unterstützt Buses, Sources, Sinks, Simple Transformers und Investment-Optionen.
+Erweiterte Version mit Unterstützung für Multi-Input/Output-Transformers.
+Unterstützt BHKW (Gas → Strom + Wärme), Wärmepumpen (Strom + Umwelt → Wärme), etc.
 
 Autor: [Ihr Name]
 Datum: Juli 2025
-Version: 1.0.0
+Version: 2.0.0 (Multi-IO)
 """
 
 import pandas as pd
@@ -21,7 +21,6 @@ try:
     import oemof.solph as solph
     from oemof.solph import buses, components
     from oemof.solph._options import Investment, NonConvex
-    # In 0.6.0: Flow ist direkt verfügbar
     Flow = solph.Flow
 except ImportError as e:
     print(f"❌ oemof.solph nicht verfügbar: {e}")
@@ -29,18 +28,24 @@ except ImportError as e:
     raise
 
 
-class SystemBuilder:
-    """Klasse für den Aufbau von oemof.solph Energiesystemen aus Excel-Daten."""
+class MultiIOSystemBuilder:
+    """
+    Erweiterte SystemBuilder-Klasse mit Multi-Input/Output-Unterstützung.
+    """
     
     def __init__(self, settings: Dict[str, Any]):
         """
-        Initialisiert den System-Builder.
+        Initialisiert den Multi-IO System-Builder.
         
         Args:
             settings: Konfigurationsdictionary
         """
         self.settings = settings
         self.logger = logging.getLogger(__name__)
+        
+        # Konfiguration
+        self.bus_separator = settings.get('bus_separator', '|')
+        self.factor_separator = settings.get('factor_separator', '|')
         
         # Komponenten-Container
         self.bus_objects = {}
@@ -53,95 +58,74 @@ class SystemBuilder:
             'sources': 0,
             'sinks': 0,
             'transformers': 0,
+            'multi_input_transformers': 0,
+            'multi_output_transformers': 0,
             'investments': 0,
             'timeseries': 0
         }
     
     def build_energy_system(self, excel_data: Dict[str, Any]) -> solph.EnergySystem:
         """
-        Baut das komplette Energiesystem aus Excel-Daten auf.
+        Baut das komplette Energiesystem mit Multi-IO-Unterstützung auf.
         
         Args:
-            excel_data: Dictionary mit Excel-Daten vom ExcelReader
+            excel_data: Dictionary mit Excel-Daten
             
         Returns:
-            oemof.solph.EnergySystem Objekt
+            Vollständiges oemof.solph EnergySystem
         """
-        self.logger.info("🏗️  Baue Energiesystem auf...")
+        self.logger.info("🏗️ Beginne Energiesystem-Aufbau (Multi-IO)")
         
-        # Zeitindex aus Excel-Daten
-        timeindex = excel_data.get('timeindex')
-        if timeindex is None:
-            raise ValueError("Kein Zeitindex in Excel-Daten gefunden")
-        
-        # Debug: Zeitindex-Informationen loggen
-        self.logger.debug(f"Zeitindex-Typ: {type(timeindex)}")
-        self.logger.debug(f"Zeitindex-Länge: {len(timeindex)}")
-        self.logger.debug(f"Erste 3 Werte: {timeindex[:3].tolist()}")
+        # Zeitindex erstellen
+        timeindex = self._create_timeindex(excel_data.get('settings', {}))
         
         # EnergySystem erstellen
-        try:
-            # Prüfen ob der Zeitindex eine gültige Frequenz hat
-            timeindex_info = excel_data.get('timeindex_info', {})
-            has_freq = timeindex_info.get('has_freq', False)
-            
-            if has_freq:
-                # Für Zeitreihen mit N-1 Werten bei N Zeitpunkten: infer_last_interval=True
-                infer_last = True
-                self.logger.debug("Zeitindex hat gültige Frequenz - verwende infer_last_interval=True")
-            else:
-                # Keine gültige Frequenz: infer_last_interval=False
-                infer_last = False
-                self.logger.debug("Zeitindex hat keine gültige Frequenz - verwende infer_last_interval=False")
-            
-            self.energy_system = solph.EnergySystem(
-                timeindex=timeindex,
-                infer_last_interval=infer_last
-            )
-            self.logger.debug("✅ EnergySystem erfolgreich erstellt")
-        except Exception as e:
-            self.logger.error(f"❌ Fehler beim Erstellen des EnergySystem: {e}")
-            raise
+        self.energy_system = solph.EnergySystem(timeindex=timeindex)
         
-        # Komponenten in der richtigen Reihenfolge erstellen
-        try:
-            self._build_buses(excel_data)
-            self._build_sources(excel_data)
-            self._build_sinks(excel_data)
-            self._build_simple_transformers(excel_data)
-        except Exception as e:
-            self.logger.error(f"❌ Fehler beim Erstellen der Komponenten: {e}")
-            raise
+        # Komponenten in korrekter Reihenfolge erstellen
+        self._build_buses(excel_data)
+        self._build_sources(excel_data)
+        self._build_sinks(excel_data)
+        self._build_multi_transformers(excel_data)  # Neue Multi-IO-Transformer
         
-        # Alle Komponenten zum Energiesystem hinzufügen
-        try:
-            all_components = list(self.bus_objects.values()) + list(self.component_objects.values())
-            self.energy_system.add(*all_components)
-            self.logger.debug(f"✅ {len(all_components)} Komponenten hinzugefügt")
-        except Exception as e:
-            self.logger.error(f"❌ Fehler beim Hinzufügen der Komponenten: {e}")
-            raise
+        # Alle Objekte zum EnergySystem hinzufügen
+        all_objects = list(self.bus_objects.values()) + list(self.component_objects.values())
+        self.energy_system.add(*all_objects)
         
-        self.logger.info("✅ Energiesystem erfolgreich aufgebaut")
+        # Statistiken ausgeben
         self._log_build_statistics()
         
+        self.logger.info("✅ Energiesystem-Aufbau abgeschlossen")
         return self.energy_system
+    
+    def _create_timeindex(self, settings: Dict[str, Any]) -> pd.DatetimeIndex:
+        """Erstellt den Zeitindex aus den Settings."""
+        start = settings.get('timeindex_start', '2025-01-01')
+        periods = int(settings.get('timeindex_periods', 8760))
+        freq = settings.get('timeindex_freq', 'h')
+        
+        timeindex = pd.date_range(start=start, periods=periods, freq=freq)
+        self.logger.info(f"⏰ Zeitindex: {timeindex[0]} bis {timeindex[-1]} ({len(timeindex)} Perioden)")
+        
+        return timeindex
     
     def _build_buses(self, excel_data: Dict[str, Any]):
         """Erstellt alle Bus-Objekte."""
         if 'buses' not in excel_data:
-            raise ValueError("Keine Bus-Definitionen gefunden")
+            self.logger.warning("⚠️ Keine Buses definiert")
+            return
         
         buses_df = excel_data['buses']
-        self.logger.info(f"   🚌 Erstelle {len(buses_df)} Buses...")
+        self.logger.info(f"🚌 Erstelle {len(buses_df)} Buses...")
         
         for _, bus_data in buses_df.iterrows():
+            if bus_data.get('include', 0) != 1:
+                continue
+                
             label = bus_data['label']
             
             try:
-                # Bus erstellen (in 0.6.0 ist Bus in solph.buses)
                 bus = solph.buses.Bus(label=label)
-                
                 self.bus_objects[label] = bus
                 self.build_stats['buses'] += 1
                 
@@ -152,9 +136,9 @@ class SystemBuilder:
                 raise
     
     def _build_sources(self, excel_data: Dict[str, Any]):
-        """Erstellt alle Source-Objekte mit neuer Investment-Logik."""
+        """Erstellt alle Source-Objekte."""
         if 'sources' not in excel_data:
-            self.logger.info("   ⏭️  Keine Sources definiert")
+            self.logger.info("   ⏭️ Keine Sources definiert")
             return
         
         sources_df = excel_data['sources']
@@ -163,43 +147,50 @@ class SystemBuilder:
         self.logger.info(f"   ⚡ Erstelle {len(sources_df)} Sources...")
         
         for _, source_data in sources_df.iterrows():
+            if source_data.get('include', 0) != 1:
+                continue
+                
             label = source_data['label']
-            bus_label = source_data['bus']
             
             try:
-                # Bus-Referenz auflösen
-                if bus_label not in self.bus_objects:
-                    raise ValueError(f"Bus '{bus_label}' nicht gefunden")
+                # Multi-Output-Unterstützung für Sources
+                output_buses = self._parse_bus_list(source_data.get('output_bus', source_data.get('bus', '')))
                 
-                bus = self.bus_objects[bus_label]
+                if not output_buses:
+                    self.logger.warning(f"Source '{label}': Keine Output-Busse definiert")
+                    continue
                 
-                # NEUE Investment-Logik: Flow erstellen
-                flow = self._create_investment_flow(source_data, timeseries_data, 'source')
+                # Multi-Output-Flows erstellen
+                output_flows = self._create_multi_flows(
+                    source_data, output_buses, timeseries_data, 'output'
+                )
                 
                 # Source erstellen
                 source = solph.components.Source(
                     label=label,
-                    outputs={bus: flow}  # Immer der erste (und einzige) Output-Flow
+                    outputs=output_flows
                 )
                 
                 self.component_objects[label] = source
                 self.build_stats['sources'] += 1
                 
                 # Investment-Statistik
-                if source_data.get('is_investment', False):
+                if source_data.get('investment', 0) == 1:
                     self.build_stats['investments'] += 1
-                    self.logger.debug(f"      ✓ Source (Investment): {label} -> {bus_label}")
+                    
+                if len(output_buses) > 1:
+                    self.logger.debug(f"      ✓ Multi-Output Source: {label} → {output_buses}")
                 else:
-                    self.logger.debug(f"      ✓ Source: {label} -> {bus_label}")
+                    self.logger.debug(f"      ✓ Source: {label} → {output_buses[0]}")
                 
             except Exception as e:
                 self.logger.error(f"❌ Fehler beim Erstellen von Source '{label}': {e}")
                 raise
     
     def _build_sinks(self, excel_data: Dict[str, Any]):
-        """Erstellt alle Sink-Objekte mit neuer Investment-Logik."""
+        """Erstellt alle Sink-Objekte."""
         if 'sinks' not in excel_data:
-            self.logger.info("   ⏭️  Keine Sinks definiert")
+            self.logger.info("   ⏭️ Keine Sinks definiert")
             return
         
         sinks_df = excel_data['sinks']
@@ -208,417 +199,226 @@ class SystemBuilder:
         self.logger.info(f"   🔽 Erstelle {len(sinks_df)} Sinks...")
         
         for _, sink_data in sinks_df.iterrows():
+            if sink_data.get('include', 0) != 1:
+                continue
+                
             label = sink_data['label']
-            bus_label = sink_data['bus']
             
             try:
-                # Bus-Referenz auflösen
-                if bus_label not in self.bus_objects:
-                    raise ValueError(f"Bus '{bus_label}' nicht gefunden")
+                # Multi-Input-Unterstützung für Sinks
+                input_buses = self._parse_bus_list(sink_data.get('input_bus', sink_data.get('bus', '')))
                 
-                bus = self.bus_objects[bus_label]
+                if not input_buses:
+                    self.logger.warning(f"Sink '{label}': Keine Input-Busse definiert")
+                    continue
                 
-                # NEUE Investment-Logik: Flow erstellen
-                flow = self._create_investment_flow(sink_data, timeseries_data, 'sink')
+                # Multi-Input-Flows erstellen
+                input_flows = self._create_multi_flows(
+                    sink_data, input_buses, timeseries_data, 'input'
+                )
                 
                 # Sink erstellen
                 sink = solph.components.Sink(
                     label=label,
-                    inputs={bus: flow}  # Immer der erste (und einzige) Input-Flow
+                    inputs=input_flows
                 )
                 
                 self.component_objects[label] = sink
                 self.build_stats['sinks'] += 1
                 
                 # Investment-Statistik
-                if sink_data.get('is_investment', False):
+                if sink_data.get('investment', 0) == 1:
                     self.build_stats['investments'] += 1
-                    self.logger.debug(f"      ✓ Sink (Investment): {bus_label} -> {label}")
+                    
+                if len(input_buses) > 1:
+                    self.logger.debug(f"      ✓ Multi-Input Sink: {input_buses} → {label}")
                 else:
-                    self.logger.debug(f"      ✓ Sink: {bus_label} -> {label}")
+                    self.logger.debug(f"      ✓ Sink: {input_buses[0]} → {label}")
                 
             except Exception as e:
                 self.logger.error(f"❌ Fehler beim Erstellen von Sink '{label}': {e}")
                 raise
     
-    def _build_simple_transformers(self, excel_data: Dict[str, Any]):
-        """Erstellt alle Simple Transformer-Objekte mit neuer Investment-Logik."""
+    def _build_multi_transformers(self, excel_data: Dict[str, Any]):
+        """Erstellt alle Multi-Input/Output-Transformer-Objekte."""
         if 'simple_transformers' not in excel_data:
-            self.logger.info("   ⏭️  Keine Simple Transformers definiert")
+            self.logger.info("   ⏭️ Keine Transformers definiert")
             return
         
         transformers_df = excel_data['simple_transformers']
-        
-        if len(transformers_df) == 0:
-            self.logger.info("   ⏭️  Simple Transformers Sheet leer")
-            return
-        
         timeseries_data = excel_data.get('timeseries', pd.DataFrame())
         
-        self.logger.info(f"   🔄 Erstelle {len(transformers_df)} Simple Transformers...")
+        self.logger.info(f"   🔄 Erstelle {len(transformers_df)} Multi-IO-Transformers...")
         
         for _, transformer_data in transformers_df.iterrows():
+            if transformer_data.get('include', 0) != 1:
+                continue
+                
             label = transformer_data['label']
-            input_bus_label = transformer_data['input_bus']
-            output_bus_label = transformer_data['output_bus']
-            conversion_factor = float(transformer_data['conversion_factor'])
             
             try:
-                # Bus-Referenzen auflösen
-                if input_bus_label not in self.bus_objects:
-                    raise ValueError(f"Input Bus '{input_bus_label}' nicht gefunden")
-                if output_bus_label not in self.bus_objects:
-                    raise ValueError(f"Output Bus '{output_bus_label}' nicht gefunden")
+                # Input- und Output-Busse parsen
+                input_buses = self._parse_bus_list(transformer_data.get('input_bus', ''))
+                output_buses = self._parse_bus_list(transformer_data.get('output_bus', ''))
                 
-                input_bus = self.bus_objects[input_bus_label]
-                output_bus = self.bus_objects[output_bus_label]
+                if not input_buses or not output_buses:
+                    self.logger.warning(f"Transformer '{label}': Keine Input- oder Output-Busse definiert")
+                    continue
                 
-                # NEUE Investment-Logik: Input Flow erstellen (Investment-Flow)
-                input_flow = self._create_investment_flow(transformer_data, timeseries_data, 'transformer_input')
+                # Validierung
+                if not self._validate_multi_transformer(transformer_data, input_buses, output_buses):
+                    continue
                 
-                # Output Flow erstellen (normaler Flow ohne Investment)
-                output_flow_data = transformer_data.copy()
-                output_flow_data['is_investment'] = False  # Output-Flow nie Investment
-                output_flow_data['existing'] = None  # Kapazität wird über Input bestimmt
-                output_flow = self._create_investment_flow(output_flow_data, timeseries_data, 'transformer_output')
+                # Flows erstellen
+                input_flows = self._create_multi_flows(
+                    transformer_data, input_buses, timeseries_data, 'input'
+                )
+                output_flows = self._create_multi_flows(
+                    transformer_data, output_buses, timeseries_data, 'output'
+                )
+                
+                # Conversion-Faktoren erstellen
+                conversion_factors = self._create_conversion_factors(
+                    transformer_data, output_buses, output_flows
+                )
                 
                 # Converter erstellen
                 converter = solph.components.Converter(
                     label=label,
-                    inputs={input_bus: input_flow},   # Investment-Flow am Input
-                    outputs={output_bus: output_flow},
-                    conversion_factors={output_bus: conversion_factor}
+                    inputs=input_flows,
+                    outputs=output_flows,
+                    conversion_factors=conversion_factors
                 )
                 
                 self.component_objects[label] = converter
                 self.build_stats['transformers'] += 1
                 
                 # Investment-Statistik
-                if transformer_data.get('is_investment', False):
+                if transformer_data.get('investment', 0) == 1:
                     self.build_stats['investments'] += 1
-                    self.logger.debug(f"      ✓ Converter (Investment): {input_bus_label} -> {output_bus_label} (η={conversion_factor})")
-                else:
-                    self.logger.debug(f"      ✓ Converter: {input_bus_label} -> {output_bus_label} (η={conversion_factor})")
+                
+                # Multi-IO-Statistiken
+                if len(input_buses) > 1:
+                    self.build_stats['multi_input_transformers'] += 1
+                if len(output_buses) > 1:
+                    self.build_stats['multi_output_transformers'] += 1
+                
+                # Logging
+                input_str = " + ".join(input_buses) if len(input_buses) > 1 else input_buses[0]
+                output_str = " + ".join(output_buses) if len(output_buses) > 1 else output_buses[0]
+                self.logger.debug(f"      ✓ Transformer: {input_str} → {output_str}")
                 
             except Exception as e:
-                self.logger.error(f"❌ Fehler beim Erstellen von Converter '{label}': {e}")
+                self.logger.error(f"❌ Fehler beim Erstellen von Transformer '{label}': {e}")
                 raise
+    
+    def _parse_bus_list(self, bus_string: str) -> List[str]:
+        """
+        Parst Bus-String mit Trennzeichen.
+        
+        Args:
+            bus_string: "el_bus|heat_bus|co2_bus" oder "el_bus"
+            
+        Returns:
+            Liste der Bus-Namen
+        """
+        if not bus_string or pd.isna(bus_string):
+            return []
+        
+        bus_str = str(bus_string).strip()
+        
+        if self.bus_separator in bus_str:
+            bus_list = [bus.strip() for bus in bus_str.split(self.bus_separator)]
+            return [bus for bus in bus_list if bus]  # Leere entfernen
+        else:
+            return [bus_str] if bus_str else []
+    
+    def _parse_conversion_factors(self, factor_string: str, expected_count: int) -> List[float]:
+        """
+        Parst Conversion-Factors für Multi-Outputs.
+        
+        Args:
+            factor_string: "0.35|0.50" oder "3.5"
+            expected_count: Erwartete Anzahl Faktoren
+            
+        Returns:
+            Liste der Conversion-Faktoren
+        """
+        if not factor_string or pd.isna(factor_string):
+            return [1.0] * expected_count
+        
+        factor_str = str(factor_string).strip()
+        
+        if self.factor_separator in factor_str:
+            factors = [float(f.strip()) for f in factor_str.split(self.factor_separator)]
+        else:
+            factors = [float(factor_str)]
+        
+        # Länge anpassen
+        if len(factors) == 1 and expected_count > 1:
+            # Ersten Faktor für alle verwenden
+            factors = factors * expected_count
+        elif len(factors) != expected_count:
+            raise ValueError(f"Anzahl Conversion-Faktoren ({len(factors)}) ≠ Erwartete Anzahl ({expected_count})")
+        
+        return factors
+    
+    def _create_multi_flows(self, component_data: pd.Series, bus_list: List[str], 
+                           timeseries_data: pd.DataFrame, flow_type: str) -> Dict[Any, Any]:
+        """
+        Erstellt mehrere Flows für Multi-Input/Output-Komponenten.
+        
+        Args:
+            component_data: Komponenten-Daten
+            bus_list: Liste der verbundenen Busse
+            timeseries_data: Zeitreihendaten
+            flow_type: 'input' oder 'output'
+            
+        Returns:
+            Dictionary {bus_object: flow_object}
+        """
+        flows = {}
+        
+        for i, bus_name in enumerate(bus_list):
+            # Bus-Objekt auflösen
+            if bus_name not in self.bus_objects:
+                raise ValueError(f"Bus '{bus_name}' nicht gefunden")
+            
+            bus_obj = self.bus_objects[bus_name]
+            
+            # Investment nur für ersten Flow (Index 0)
+            if i == 0:
+                # Erster Flow: mit Investment-Möglichkeit
+                flow = self._create_investment_flow(component_data, timeseries_data, flow_type)
+            else:
+                # Weitere Flows: ohne Investment
+                flow = self._create_standard_flow(component_data, timeseries_data, flow_type)
+            
+            flows[bus_obj] = flow
+        
+        return flows
     
     def _create_investment_flow(self, component_data: pd.Series, timeseries_data: pd.DataFrame, 
                                flow_type: str) -> Flow:
         """
-        NEUE METHODE: Erstellt ein Flow-Objekt mit neuer Investment-Logik.
+        Erstellt einen Flow mit Investment-Möglichkeit.
         
         Args:
-            component_data: Pandas Series mit Komponentendaten
-            timeseries_data: DataFrame mit Zeitreihendaten
-            flow_type: Art des Flows ('source', 'sink', 'transformer_input', 'transformer_output')
+            component_data: Komponenten-Daten
+            timeseries_data: Zeitreihendaten
+            flow_type: 'input' oder 'output'
             
         Returns:
-            oemof.solph.Flow Objekt
+            Flow-Objekt
         """
         flow_params = {}
         
-        # NEUE Investment-Logik anwenden
-        nominal_capacity = self._process_new_investment_capacity(component_data)
-        if nominal_capacity is not None:
-            flow_params['nominal_capacity'] = nominal_capacity
+        # Investment-Kapazität verarbeiten
+        capacity = self._process_investment_capacity(component_data)
+        if capacity is not None:
+            flow_params['nominal_capacity'] = capacity
         
-        # Variable Costs (unverändert)
-        if 'variable_costs' in component_data and pd.notna(component_data['variable_costs']):
-            try:
-                var_costs = float(component_data['variable_costs'])
-                flow_params['variable_costs'] = var_costs
-            except (ValueError, TypeError):
-                pass
-        
-        # Profile verarbeiten (unverändert)
-        profile = self._process_profiles(component_data, timeseries_data, flow_type)
-        if profile is not None:
-            if flow_type == 'sink':
-                # Für Sinks: fix profile
-                flow_params['fix'] = profile
-                # Wenn kein nominal_capacity gesetzt ist, verwende das Maximum des Profils
-                if 'nominal_capacity' not in flow_params:
-                    max_profile_value = max(profile) if profile else 1.0
-                    flow_params['nominal_capacity'] = max_profile_value * 1.2  # 20% Puffer
-                    self.logger.debug(f"Automatische nominal_capacity für Sink mit fix Profile: {flow_params['nominal_capacity']:.2f}")
-            else:
-                # Für Sources: max profile
-                flow_params['max'] = profile
-        
-        # Min/Max Constraints (TODO: implementieren)
-        if 'min' in component_data and pd.notna(component_data['min']):
-            try:
-                min_val = float(component_data['min'])
-                flow_params['min'] = min_val
-            except (ValueError, TypeError):
-                pass
-        
-        if 'max' in component_data and pd.notna(component_data['max']):
-            try:
-                max_val = float(component_data['max'])
-                flow_params['max'] = max_val
-            except (ValueError, TypeError):
-                pass
-        
-        # NonConvex Parameter (unverändert)
-        nonconvex_obj = self._create_nonconvex(component_data)
-        if nonconvex_obj is not None:
-            flow_params['nonconvex'] = nonconvex_obj
-        
-        # Flow erstellen
-        try:
-            return Flow(**flow_params)
-        except Exception as e:
-            self.logger.warning(f"Fehler beim Erstellen des Investment-Flows: {e}")
-            self.logger.warning(f"Flow-Parameter: {flow_params}")
-            # Fallback: Minimaler Flow
-            return Flow()
-    
-    def _process_new_investment_capacity(self, component_data: pd.Series) -> Optional[Union[float, Any]]:
-        """
-        ERWEITERT: Verarbeitet Investment-Kapazität mit Annuity-Berechnung.
-        
-        Neue Logik für ep_costs:
-        1. Nur investment_costs → ep_costs = investment_costs
-        2. investment_costs + lifetime + interest_rate → ep_costs = Annuity
-        """
-        is_investment = component_data.get('is_investment', False)
-        existing_value = component_data.get('existing')
-        
-        if is_investment:
-            # Investment-Fall: Erstelle Investment-Objekt
-            investment_params = {}
-            
-            # NEUE ANNUITY-BERECHNUNG FÜR EP_COSTS
-            ep_costs = self._calculate_ep_costs(component_data)
-            if ep_costs is not None:
-                investment_params['ep_costs'] = ep_costs
-            
-            # Investment-Grenzen (unverändert)
-            if 'invest_min' in component_data and pd.notna(component_data['invest_min']):
-                investment_params['minimum'] = float(component_data['invest_min'])
-            
-            if 'invest_max' in component_data and pd.notna(component_data['invest_max']):
-                investment_params['maximum'] = float(component_data['invest_max'])
-            
-            # Existing capacity als bestehende Kapazität (unverändert)
-            if existing_value is not None and pd.notna(existing_value):
-                try:
-                    existing_cap = float(existing_value)
-                    if existing_cap >= 0:
-                        investment_params['existing'] = existing_cap
-                except (ValueError, TypeError):
-                    self.logger.warning(f"Ungültiger existing-Wert für Investment: {existing_value}")
-            
-            # Investment-Objekt erstellen
-            if investment_params:
-                return Investment(**investment_params)
-            else:
-                self.logger.warning("Investment aktiviert, aber keine Investment-Parameter gefunden")
-                return None
-        
-        else:
-            # Normaler Fall: existing → nominal_capacity (unverändert)
-            if existing_value is not None and pd.notna(existing_value):
-                try:
-                    existing_cap = float(existing_value)
-                    if existing_cap > 0:
-                        return existing_cap
-                    else:
-                        self.logger.warning(f"existing-Wert <= 0: {existing_cap}")
-                        return None
-                except (ValueError, TypeError):
-                    self.logger.warning(f"Ungültiger existing-Wert: {existing_value}")
-                    return None
-            else:
-                return None
-
-    def _calculate_ep_costs(self, component_data: pd.Series) -> Optional[float]:
-        """
-        NEUE METHODE: Berechnet ep_costs entweder direkt oder über Annuity.
-        
-        Methode 1: Nur investment_costs
-        → ep_costs = investment_costs
-        
-        Methode 2: investment_costs + lifetime + interest_rate  
-        → ep_costs = Annuity = investment_costs * (r * (1+r)^n) / ((1+r)^n - 1)
-        
-        Args:
-            component_data: Pandas Series mit Komponentendaten
-            
-        Returns:
-            Berechnete ep_costs oder None bei Fehlern
-        """
-        investment_costs = component_data.get('investment_costs')
-        lifetime = component_data.get('lifetime')
-        interest_rate = component_data.get('interest_rate')
-        
-        # Investment_costs ist erforderlich
-        if pd.isna(investment_costs) or investment_costs == '':
-            return None
-        
-        try:
-            inv_costs = float(investment_costs)
-            if inv_costs <= 0:
-                return None
-        except (ValueError, TypeError):
-            return None
-        
-        # Prüfe ob Annuity-Parameter vorhanden sind
-        has_lifetime = pd.notna(lifetime) and lifetime != ''
-        has_interest_rate = pd.notna(interest_rate) and interest_rate != ''
-        
-        if has_lifetime and has_interest_rate:
-            # METHODE 2: Annuity-Berechnung
-            try:
-                lifetime_years = float(lifetime)
-                interest_rate_decimal = float(interest_rate)
-                
-                if lifetime_years <= 0 or interest_rate_decimal < 0:
-                    self.logger.warning("Ungültige Annuity-Parameter - verwende investment_costs direkt")
-                    return inv_costs
-                
-                # Spezialfall: Zinssatz = 0
-                if interest_rate_decimal == 0:
-                    annuity = inv_costs / lifetime_years
-                    self.logger.debug(f"Annuity (r=0): {annuity:.2f} €/kW/a "
-                                    f"(Investment: {inv_costs} €/kW, Lifetime: {lifetime_years}a)")
-                    return annuity
-                
-                # Standard Annuity-Formel: A = I * (r * (1+r)^n) / ((1+r)^n - 1)
-                r = interest_rate_decimal
-                n = lifetime_years
-                
-                numerator = r * ((1 + r) ** n)
-                denominator = ((1 + r) ** n) - 1
-                
-                if denominator == 0:
-                    self.logger.warning("Annuity-Berechnung: Division durch Null - verwende investment_costs direkt")
-                    return inv_costs
-                
-                annuity_factor = numerator / denominator
-                annuity = inv_costs * annuity_factor
-                
-                self.logger.debug(f"Annuity berechnet: {annuity:.2f} €/kW/a "
-                                f"(Investment: {inv_costs} €/kW, {lifetime_years}a, {interest_rate_decimal*100:.1f}%)")
-                
-                return annuity
-                
-            except (ValueError, TypeError, OverflowError) as e:
-                self.logger.warning(f"Fehler bei Annuity-Berechnung: {e} - verwende investment_costs direkt")
-                return inv_costs
-        
-        else:
-            # METHODE 1: Direkte investment_costs
-            self.logger.debug(f"Direkte ep_costs: {inv_costs} €/kW "
-                            f"(keine Annuity-Parameter vorhanden)")
-            return inv_costs
-         
-    def get_investment_summary(self, energy_system: solph.EnergySystem) -> Dict[str, Any]:
-        """
-        NEUE METHODE: Erstellt eine Zusammenfassung aller Investment-Komponenten.
-        
-        Args:
-            energy_system: Das oemof.solph EnergySystem
-            
-        Returns:
-            Dictionary mit Investment-Zusammenfassung
-        """
-        investment_summary = {
-            'total_investments': 0,
-            'sources_with_investment': [],
-            'sinks_with_investment': [],
-            'transformers_with_investment': [],
-            'total_potential_capacity': 0,
-            'total_investment_costs_max': 0
-        }
-        
-        nodes = energy_system.nodes
-        
-        for node in nodes:
-            node_label = str(node.label)
-            
-            # Investment-Flows finden
-            investment_flows = []
-            
-            # Inputs prüfen
-            if hasattr(node, 'inputs'):
-                for input_node, flow in node.inputs.items():
-                    if isinstance(getattr(flow, 'nominal_capacity', None), Investment):
-                        investment_flows.append({
-                            'direction': 'input',
-                            'connection': f"{input_node.label} → {node.label}",
-                            'investment': flow.nominal_capacity
-                        })
-            
-            # Outputs prüfen
-            if hasattr(node, 'outputs'):
-                for output_node, flow in node.outputs.items():
-                    if isinstance(getattr(flow, 'nominal_capacity', None), Investment):
-                        investment_flows.append({
-                            'direction': 'output',
-                            'connection': f"{node.label} → {output_node.label}",
-                            'investment': flow.nominal_capacity
-                        })
-            
-            # Investment-Komponenten kategorisieren
-            if investment_flows:
-                investment_summary['total_investments'] += 1
-                
-                # Komponententyp bestimmen
-                if isinstance(node, solph.components.Source):
-                    investment_summary['sources_with_investment'].append({
-                        'label': node_label,
-                        'flows': investment_flows
-                    })
-                elif isinstance(node, solph.components.Sink):
-                    investment_summary['sinks_with_investment'].append({
-                        'label': node_label,
-                        'flows': investment_flows
-                    })
-                elif isinstance(node, solph.components.Converter):
-                    investment_summary['transformers_with_investment'].append({
-                        'label': node_label,
-                        'flows': investment_flows
-                    })
-                
-                # Potentiale und Kosten summieren
-                for flow_info in investment_flows:
-                    investment = flow_info['investment']
-                    
-                    if hasattr(investment, 'maximum') and investment.maximum:
-                        investment_summary['total_potential_capacity'] += investment.maximum
-                    
-                    if hasattr(investment, 'ep_costs') and investment.ep_costs:
-                        if hasattr(investment, 'maximum') and investment.maximum:
-                            max_costs = investment.ep_costs * investment.maximum
-                            investment_summary['total_investment_costs_max'] += max_costs
-        
-        return investment_summary    
-    
-    def _create_flow(self, component_data: pd.Series, timeseries_data: pd.DataFrame, 
-                     flow_type: str) -> Flow:
-        """
-        Erstellt ein Flow-Objekt basierend auf Komponentendaten.
-        
-        Args:
-            component_data: Pandas Series mit Komponentendaten
-            timeseries_data: DataFrame mit Zeitreihendaten
-            flow_type: Art des Flows ('source', 'sink', 'transformer_input', 'transformer_output')
-            
-        Returns:
-            oemof.solph.Flow Objekt
-        """
-        flow_params = {}
-        
-        # Nominal Capacity verarbeiten
-        nominal_capacity = self._process_nominal_capacity(component_data)
-        if nominal_capacity is not None:
-            flow_params['nominal_capacity'] = nominal_capacity
-        
-        # Variable Costs
+        # Variable Kosten
         if 'variable_costs' in component_data and pd.notna(component_data['variable_costs']):
             try:
                 var_costs = float(component_data['variable_costs'])
@@ -629,177 +429,264 @@ class SystemBuilder:
         # Profile verarbeiten
         profile = self._process_profiles(component_data, timeseries_data, flow_type)
         if profile is not None:
-            if flow_type == 'sink':
-                # Für Sinks: fix profile - WICHTIG: nominal_capacity muss auch gesetzt sein!
+            if flow_type == 'input':
+                # Für Inputs: fix profile
                 flow_params['fix'] = profile
-                # Wenn kein nominal_capacity gesetzt ist, verwende das Maximum des Profils
+                # Auto-Kapazität wenn nicht gesetzt
                 if 'nominal_capacity' not in flow_params:
-                    max_profile_value = max(profile) if profile else 1.0
-                    flow_params['nominal_capacity'] = max_profile_value * 1.2  # 20% Puffer
-                    self.logger.debug(f"Automatische nominal_capacity für Sink mit fix Profile: {flow_params['nominal_capacity']:.2f}")
+                    flow_params['nominal_capacity'] = max(profile) * 1.2
             else:
-                # Für Sources: max profile
+                # Für Outputs: max profile
                 flow_params['max'] = profile
         
-        # Min/Max Constraints
-        if 'min' in component_data and pd.notna(component_data['min']):
-            try:
-                min_val = float(component_data['min'])
-                flow_params['min'] = min_val
-            except (ValueError, TypeError):
-                pass
-        
-        if 'max' in component_data and pd.notna(component_data['max']):
-            try:
-                max_val = float(component_data['max'])
-                flow_params['max'] = max_val
-            except (ValueError, TypeError):
-                pass
-        
-        # NonConvex Parameter (falls implementiert)
-        nonconvex_obj = self._create_nonconvex(component_data)
-        if nonconvex_obj is not None:
-            flow_params['nonconvex'] = nonconvex_obj
-        
-        # Flow erstellen - mit expliziter Fehlerbehandlung
+        # Flow erstellen
         try:
             return Flow(**flow_params)
         except Exception as e:
-            self.logger.warning(f"Fehler beim Erstellen des Flows: {e}")
-            self.logger.warning(f"Flow-Parameter: {flow_params}")
-            # Fallback: Minimaler Flow
+            self.logger.warning(f"Fehler beim Erstellen des Investment-Flows: {e}")
             return Flow()
     
-    def _process_nominal_capacity(self, component_data: pd.Series) -> Optional[float]:
-        """Verarbeitet nominal_capacity Parameter, inklusive Investment."""
-        if 'nominal_capacity' not in component_data:
+    def _create_standard_flow(self, component_data: pd.Series, timeseries_data: pd.DataFrame, 
+                             flow_type: str) -> Flow:
+        """
+        Erstellt einen Standard-Flow ohne Investment.
+        
+        Args:
+            component_data: Komponenten-Daten
+            timeseries_data: Zeitreihendaten
+            flow_type: 'input' oder 'output'
+            
+        Returns:
+            Flow-Objekt
+        """
+        flow_params = {}
+        
+        # Nur Standard-Kapazität (existing)
+        if 'existing' in component_data and pd.notna(component_data['existing']):
+            try:
+                existing = float(component_data['existing'])
+                if existing > 0:
+                    flow_params['nominal_capacity'] = existing
+            except (ValueError, TypeError):
+                pass
+        
+        # Variable Kosten
+        if 'variable_costs' in component_data and pd.notna(component_data['variable_costs']):
+            try:
+                var_costs = float(component_data['variable_costs'])
+                flow_params['variable_costs'] = var_costs
+            except (ValueError, TypeError):
+                pass
+        
+        # Profile verarbeiten (vereinfacht)
+        profile = self._process_profiles(component_data, timeseries_data, flow_type)
+        if profile is not None:
+            if flow_type == 'input':
+                flow_params['fix'] = profile
+            else:
+                flow_params['max'] = profile
+        
+        # Flow erstellen
+        try:
+            return Flow(**flow_params)
+        except Exception as e:
+            self.logger.warning(f"Fehler beim Erstellen des Standard-Flows: {e}")
+            return Flow()
+    
+    def _process_investment_capacity(self, component_data: pd.Series) -> Optional[Union[float, Investment]]:
+        """
+        Verarbeitet Investment-Kapazität mit Annuity-Berechnung.
+        
+        Args:
+            component_data: Komponenten-Daten
+            
+        Returns:
+            Float-Wert oder Investment-Objekt
+        """
+        # Prüfe ob Investment aktiviert
+        if component_data.get('investment', 0) != 1:
+            # Kein Investment: existing als nominal_capacity verwenden
+            if 'existing' in component_data and pd.notna(component_data['existing']):
+                try:
+                    existing = float(component_data['existing'])
+                    return existing if existing > 0 else None
+                except (ValueError, TypeError):
+                    pass
             return None
         
-        nominal_capacity = component_data['nominal_capacity']
-        
-        # Investment-Fall
-        if component_data.get('is_investment', False):
-            investment_params = {}
+        # Investment aktiviert: Investment-Objekt erstellen
+        try:
+            investment_costs = float(component_data.get('investment_costs', 0))
+            existing = float(component_data.get('existing', 0))
+            invest_min = float(component_data.get('invest_min', 0))
+            invest_max = float(component_data.get('invest_max', 500))  # Fallback
             
-            # Investment-Parameter sammeln
-            if 'investment_costs' in component_data and pd.notna(component_data['investment_costs']):
-                investment_params['ep_costs'] = float(component_data['investment_costs'])
-            
-            if 'invest_min' in component_data and pd.notna(component_data['invest_min']):
-                investment_params['minimum'] = float(component_data['invest_min'])
-            
-            if 'invest_max' in component_data and pd.notna(component_data['invest_max']):
-                investment_params['maximum'] = float(component_data['invest_max'])
-            
-            # Existing capacity
-            if 'existing_capacity' in component_data and pd.notna(component_data['existing_capacity']):
-                investment_params['existing'] = float(component_data['existing_capacity'])
+            # EP-Costs berechnen
+            ep_costs = self._calculate_ep_costs(component_data, investment_costs)
             
             # Investment-Objekt erstellen
-            return Investment(**investment_params)
+            investment = Investment(
+                ep_costs=ep_costs,
+                existing=existing,
+                minimum=invest_min,
+                maximum=invest_max
+            )
+            
+            return investment
+            
+        except Exception as e:
+            self.logger.warning(f"Fehler bei Investment-Verarbeitung: {e}")
+            return None
+    
+    def _calculate_ep_costs(self, component_data: pd.Series, investment_costs: float) -> float:
+        """
+        Berechnet EP-Costs mit Annuity-Formel.
         
-        # Normale Kapazität
-        elif pd.notna(nominal_capacity) and str(nominal_capacity).upper() != 'INVEST':
+        Args:
+            component_data: Komponenten-Daten
+            investment_costs: Investitionskosten
+            
+        Returns:
+            EP-Costs-Wert
+        """
+        lifetime = component_data.get('lifetime', None)
+        interest_rate = component_data.get('interest_rate', None)
+        
+        if lifetime and interest_rate is not None:
             try:
-                return float(nominal_capacity)
+                lifetime = float(lifetime)
+                interest_rate = float(interest_rate)
+                
+                if interest_rate == 0:
+                    # Zinssatz = 0: Einfache Division
+                    return investment_costs / lifetime
+                else:
+                    # Annuity-Formel
+                    q = 1 + interest_rate
+                    annuity_factor = (interest_rate * q**lifetime) / (q**lifetime - 1)
+                    return investment_costs * annuity_factor
+                    
             except (ValueError, TypeError):
-                return None
+                pass
         
-        return None
+        # Fallback: Direkte Kosten
+        return investment_costs
     
     def _process_profiles(self, component_data: pd.Series, timeseries_data: pd.DataFrame, 
                          flow_type: str) -> Optional[List[float]]:
-        """Verarbeitet Zeitreihen-Profile."""
-        if timeseries_data.empty:
+        """
+        Verarbeitet Profile aus Zeitreihendaten.
+        
+        Args:
+            component_data: Komponenten-Daten
+            timeseries_data: Zeitreihendaten
+            flow_type: 'input' oder 'output'
+            
+        Returns:
+            Liste der Profil-Werte
+        """
+        profile_column = component_data.get('profile_column', '')
+        
+        if not profile_column or pd.isna(profile_column):
             return None
         
-        # Profile-Spalte bestimmen
-        profile_column = None
+        if profile_column not in timeseries_data.columns:
+            self.logger.warning(f"Profil-Spalte '{profile_column}' nicht in Zeitreihendaten gefunden")
+            return None
         
-        if flow_type == 'source':
-            # Für Sources: profile_column oder max_profile
-            if 'profile_column' in component_data and pd.notna(component_data['profile_column']):
-                profile_column = component_data['profile_column']
-            elif 'max_profile' in component_data and pd.notna(component_data['max_profile']):
-                profile_column = component_data['max_profile']
+        profile_values = timeseries_data[profile_column].values
         
-        elif flow_type == 'sink':
-            # Für Sinks: profile_column oder fix_profile
-            if 'profile_column' in component_data and pd.notna(component_data['profile_column']):
-                profile_column = component_data['profile_column']
-            elif 'fix_profile' in component_data and pd.notna(component_data['fix_profile']):
-                profile_column = component_data['fix_profile']
+        if len(profile_values) == 0:
+            return None
         
-        # Profil extrahieren
-        if profile_column and profile_column in timeseries_data.columns:
-            try:
-                profile = timeseries_data[profile_column].values
-                
-                # NaN-Werte behandeln
-                if np.isnan(profile).any():
-                    self.logger.warning(f"NaN-Werte in Profil '{profile_column}' durch 0 ersetzt")
-                    profile = np.nan_to_num(profile, nan=0.0)
-                
-                # Negative Werte prüfen
-                if (profile < 0).any() and flow_type == 'source':
-                    self.logger.warning(f"Negative Werte in Source-Profil '{profile_column}' durch 0 ersetzt")
-                    profile = np.maximum(profile, 0)
-                
-                # Sicherstellen, dass alle Werte numerisch und endlich sind
-                profile = np.asarray(profile, dtype=float)
-                profile = np.where(np.isfinite(profile), profile, 0.0)
-                
-                self.build_stats['timeseries'] += 1
-                return profile.tolist()
-                
-            except Exception as e:
-                self.logger.warning(f"Fehler beim Verarbeiten von Profil '{profile_column}': {e}")
-                return None
+        # Für Sources: Normalisierung auf max=1.0
+        if flow_type == 'output' and max(profile_values) > 1.0:
+            profile_values = profile_values / max(profile_values)
         
-        return None
+        return profile_values.tolist()
     
-    def _create_nonconvex(self, component_data: pd.Series) -> Optional[NonConvex]:
-        """Erstellt NonConvex-Objekt falls entsprechende Parameter vorhanden."""
-        nonconvex_params = {}
+    def _create_conversion_factors(self, transformer_data: pd.Series, output_buses: List[str], 
+                                  output_flows: Dict[Any, Any]) -> Dict[Any, float]:
+        """
+        Erstellt Conversion-Faktoren-Dictionary für Multi-Output-Transformer.
         
-        # NonConvex-Parameter sammeln
-        param_mapping = {
-            'minimum_uptime': 'minimum_uptime',
-            'minimum_downtime': 'minimum_downtime',
-            'startup_costs': 'startup_costs',
-            'shutdown_costs': 'shutdown_costs',
-            'maximum_startups': 'maximum_startups',
-            'maximum_shutdowns': 'maximum_shutdowns',
-            'initial_status': 'initial_status'
-        }
+        Args:
+            transformer_data: Transformer-Daten
+            output_buses: Liste der Output-Bus-Namen
+            output_flows: Dictionary der Output-Flows
+            
+        Returns:
+            Dictionary {bus_object: conversion_factor}
+        """
+        conversion_factors = {}
         
-        for excel_param, solph_param in param_mapping.items():
-            if excel_param in component_data and pd.notna(component_data[excel_param]):
-                try:
-                    value = component_data[excel_param]
-                    if excel_param in ['startup_costs', 'shutdown_costs']:
-                        nonconvex_params[solph_param] = float(value)
-                    else:
-                        nonconvex_params[solph_param] = int(value)
-                except (ValueError, TypeError):
-                    self.logger.warning(f"Ungültiger NonConvex-Parameter {excel_param}: {value}")
+        if len(output_buses) == 1:
+            # Single-Output: conversion_factor verwenden
+            factor = float(transformer_data.get('conversion_factor', 1.0))
+            bus_obj = list(output_flows.keys())[0]
+            conversion_factors[bus_obj] = factor
+        else:
+            # Multi-Output: output_conversion_factors verwenden
+            factors_str = transformer_data.get('output_conversion_factors', 
+                                              transformer_data.get('conversion_factor', '1.0'))
+            factors = self._parse_conversion_factors(factors_str, len(output_buses))
+            
+            for i, (bus_obj, flow) in enumerate(output_flows.items()):
+                conversion_factors[bus_obj] = factors[i]
         
-        # NonConvex-Objekt nur erstellen wenn Parameter vorhanden
-        if nonconvex_params:
-            return NonConvex(**nonconvex_params)
+        return conversion_factors
+    
+    def _validate_multi_transformer(self, transformer_data: pd.Series, 
+                                   input_buses: List[str], output_buses: List[str]) -> bool:
+        """
+        Validiert Multi-Input/Output-Transformer-Konfiguration.
         
-        return None
+        Args:
+            transformer_data: Transformer-Daten
+            input_buses: Liste der Input-Busse
+            output_buses: Liste der Output-Busse
+            
+        Returns:
+            True wenn gültig
+        """
+        label = transformer_data.get('label', 'unknown')
+        
+        # Mindestens ein Input und ein Output
+        if not input_buses or not output_buses:
+            self.logger.error(f"Transformer '{label}': Mindestens ein Input und Output erforderlich")
+            return False
+        
+        # Alle Busse existieren?
+        for bus_name in input_buses + output_buses:
+            if bus_name not in self.bus_objects:
+                self.logger.error(f"Transformer '{label}': Bus '{bus_name}' nicht gefunden")
+                return False
+        
+        # Conversion-Faktoren prüfen
+        if len(output_buses) > 1:
+            factors_str = transformer_data.get('output_conversion_factors', 
+                                              transformer_data.get('conversion_factor', '1.0'))
+            try:
+                factors = self._parse_conversion_factors(factors_str, len(output_buses))
+                if len(factors) != len(output_buses):
+                    self.logger.error(f"Transformer '{label}': Anzahl Conversion-Faktoren stimmt nicht")
+                    return False
+            except ValueError as e:
+                self.logger.error(f"Transformer '{label}': {e}")
+                return False
+        
+        return True
     
     def _log_build_statistics(self):
-        """Loggt Statistiken zum Aufbau des Energiesystems."""
-        self.logger.info("📊 Aufbau-Statistiken:")
+        """Gibt Aufbau-Statistiken aus."""
+        self.logger.info("📊 Multi-IO Aufbau-Statistiken:")
         for component_type, count in self.build_stats.items():
             if count > 0:
-                self.logger.info(f"   {component_type.title()}: {count}")
+                self.logger.info(f"   {component_type.replace('_', ' ').title()}: {count}")
     
     def get_system_summary(self, energy_system: solph.EnergySystem) -> Dict[str, str]:
         """
-        Erstellt eine Zusammenfassung des aufgebauten Energiesystems.
+        Erstellt eine Zusammenfassung des Multi-IO-Energiesystems.
         
         Args:
             energy_system: Das oemof.solph EnergySystem
@@ -828,116 +715,81 @@ class SystemBuilder:
         summary['Sinks'] = str(len(sinks))
         summary['Converter'] = str(len(converters))
         
+        # Multi-IO-Statistiken
+        summary['Multi-Input-Transformer'] = str(self.build_stats.get('multi_input_transformers', 0))
+        summary['Multi-Output-Transformer'] = str(self.build_stats.get('multi_output_transformers', 0))
+        
         # Investment-Komponenten zählen
         investment_count = 0
         for node in nodes:
             if hasattr(node, 'inputs'):
                 for flow in node.inputs.values():
-                    if isinstance(getattr(flow, 'nominal_capacity', None), Investment):
+                    if hasattr(flow, 'investment') and flow.investment is not None:
                         investment_count += 1
             if hasattr(node, 'outputs'):
                 for flow in node.outputs.values():
-                    if isinstance(getattr(flow, 'nominal_capacity', None), Investment):
+                    if hasattr(flow, 'investment') and flow.investment is not None:
                         investment_count += 1
         
         if investment_count > 0:
             summary['Investment-Flows'] = str(investment_count)
         
-        # Gesamt-Knoten
         summary['Gesamt-Knoten'] = str(len(nodes))
         
         return summary
-    
-    def validate_system(self, energy_system: solph.EnergySystem) -> Tuple[bool, List[str]]:
-        """
-        Validiert das aufgebaute Energiesystem.
-        
-        Args:
-            energy_system: Das zu validierende EnergySystem
-            
-        Returns:
-            Tuple (is_valid, error_messages)
-        """
-        errors = []
-        
-        # Basis-Validierung
-        if len(energy_system.nodes) == 0:
-            errors.append("Energiesystem ist leer")
-            return False, errors
-        
-        # Buses prüfen
-        buses = [n for n in energy_system.nodes if isinstance(n, solph.buses.Bus)]
-        if len(buses) == 0:
-            errors.append("Keine Buses gefunden")
-        
-        # Isolierte Buses prüfen
-        for bus in buses:
-            has_input = any(bus in node.outputs for node in energy_system.nodes if hasattr(node, 'outputs'))
-            has_output = any(bus in node.inputs for node in energy_system.nodes if hasattr(node, 'inputs'))
-            
-            if not has_input and not has_output:
-                errors.append(f"Bus '{bus.label}' ist isoliert (keine Verbindungen)")
-            elif not has_input:
-                errors.append(f"Bus '{bus.label}' hat keine Inputs")
-            elif not has_output:
-                errors.append(f"Bus '{bus.label}' hat keine Outputs")
-        
-        # Investment-Parameter prüfen
-        for node in energy_system.nodes:
-            if hasattr(node, 'outputs'):
-                for flow in node.outputs.values():
-                    if isinstance(getattr(flow, 'nominal_capacity', None), Investment):
-                        investment = flow.nominal_capacity
-                        if hasattr(investment, 'ep_costs') and investment.ep_costs <= 0:
-                            errors.append(f"Investment ohne positive Kosten: {node.label}")
-        
-        is_valid = len(errors) == 0
-        return is_valid, errors
 
-def test_system_builder():
-    """Testfunktion für den System-Builder."""
-    from pathlib import Path
-    import sys
-    sys.path.append(str(Path(__file__).parent.parent))
+
+# Backward-Kompatibilität: Alias für die alte SystemBuilder-Klasse
+SystemBuilder = MultiIOSystemBuilder
+
+
+# Test-Funktion
+def test_multi_io_system_builder():
+    """Test-Funktion für den Multi-IO-System-Builder."""
+    # Test-Daten
+    test_data = {
+        'settings': {
+            'timeindex_start': '2025-01-01',
+            'timeindex_periods': 24,
+            'timeindex_freq': 'h'
+        },
+        'buses': pd.DataFrame({
+            'label': ['el_bus', 'heat_bus', 'gas_bus'],
+            'include': [1, 1, 1],
+            'description': ['Elektrischer Bus', 'Wärme-Bus', 'Gas-Bus']
+        }),
+        'simple_transformers': pd.DataFrame({
+            'label': ['chp_plant'],
+            'include': [1],
+            'input_bus': ['gas_bus'],
+            'output_bus': ['el_bus|heat_bus'],
+            'output_conversion_factors': ['0.35|0.50'],
+            'existing': [0],
+            'investment': [1],
+            'investment_costs': [2000],
+            'lifetime': [15],
+            'interest_rate': [0.04]
+        })
+    }
+    
+    # System-Builder testen
+    settings = {'debug_mode': True}
+    builder = MultiIOSystemBuilder(settings)
     
     try:
-        from modules.excel_reader import ExcelReader
+        energy_system = builder.build_energy_system(test_data)
+        summary = builder.get_system_summary(energy_system)
         
-        # Test mit Beispieldatei
-        example_file = Path("examples/example_1.xlsx")
-        
-        if example_file.exists():
-            # Excel-Daten einlesen
-            settings = {'debug_mode': True}
-            reader = ExcelReader(settings)
-            excel_data = reader.read_project_file(example_file)
+        print("✅ Multi-IO-System-Builder Test erfolgreich!")
+        print("Zusammenfassung:")
+        for key, value in summary.items():
+            print(f"  {key}: {value}")
             
-            # System aufbauen
-            builder = SystemBuilder(settings)
-            energy_system = builder.build_energy_system(excel_data)
-            
-            # Validieren
-            is_valid, errors = builder.validate_system(energy_system)
-            
-            if is_valid:
-                print("✅ Test erfolgreich!")
-                summary = builder.get_system_summary(energy_system)
-                print("System-Zusammenfassung:")
-                for key, value in summary.items():
-                    print(f"  {key}: {value}")
-            else:
-                print("❌ Validierungsfehler:")
-                for error in errors:
-                    print(f"  - {error}")
-                    
-        else:
-            print(f"❌ Beispieldatei nicht gefunden: {example_file}")
-            
-    except ImportError as e:
-        print(f"❌ Import-Fehler: {e}")
     except Exception as e:
         print(f"❌ Test fehlgeschlagen: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
-    test_system_builder()
+    test_multi_io_system_builder()
